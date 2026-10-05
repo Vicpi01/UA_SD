@@ -19,3 +19,13 @@ Muestra en detalle el funcionamiento en tiempo real del sistema incluyendo las *
     * **Desconectada:** No se puede monitorizar la estación. Se muestra mediante el color **GRIS**.
 
 ## Operarios de campo:
+
+## Planificación de la práctica:
+
+### Plan de seguimiento:
+Para la realización de la práctica vamos a empezar por hacer la Water Station. Para ello, comenzaremos con el monitor, creando un motor "fake" para probar la conexión. A continuación, haremos la conexión con Kafka y, mediante un productor-consumidor, verificaremos que funciona correctamente.
+
+Una vez hechos eso, implementaremos la Central, pero no completamente. Empezaremos con la conectividad con Kafka y los sockets hacia la WS para poder implementar los operarios y, así, finalmente terminaremos la central.
+
+### Reparto de tareas:
+...
