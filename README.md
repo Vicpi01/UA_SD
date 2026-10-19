@@ -28,4 +28,62 @@ Para la realización de la práctica vamos a empezar por hacer la Water Station.
 Una vez hechos eso, implementaremos la Central, pero no completamente. Empezaremos con la conectividad con Kafka y los sockets hacia la WS para poder implementar los operarios y, así, finalmente terminaremos la central.
 
 ### Reparto de tareas:
-...
+
+
+
+
+
+
+
+
+## Protocolo de mensajes (versión inicial)
+
+Reglas generales:
+- Todos los mensajes son **texto en una sola línea**, con los campos separados por `#`.
+- Los mensajes por **sockets** terminan con salto de línea (`println` / `readLine`).
+- Los mensajes por **Kafka** llevan una clave (la que se indica) y el texto como valor.
+- Esta es la versión mínima para empezar. Se ampliará con el resto de mensajes (telemetría, fugas, bloqueos).
+
+### 1. Registro de una estación (socket: Monitor → CENTRAL)
+
+El Monitor (`WM_WS_M`) se conecta al puerto de CENTRAL y envía:
+
+    REGISTER#idEstacion#ubicacion
+
+Ejemplo: `REGISTER#WS-01#Parque Central`
+
+CENTRAL responde con una línea:
+
+| Respuesta | Significado |
+|---|---|
+| `OK` | Estación registrada (o reconocida) y marcada como disponible |
+| `KO#motivo` | Rechazada (por ejemplo `KO#formato invalido`) |
+
+### 2. Petición de riego (Kafka: FO → CENTRAL)
+
+| Campo | Valor |
+|---|---|
+| Topic | `fo-requests` |
+| Clave | `idOperario` |
+| Valor | `idEstacion` |
+
+Ejemplo: clave `FO-01`, valor `WS-01` (el operario FO-01 pide regar en WS-01).
+
+### 3. Respuesta a la petición (Kafka: CENTRAL → FO)
+
+| Campo | Valor |
+|---|---|
+| Topic | `fo-notifications` |
+| Clave | `idOperario` |
+| Valor | `AUTORIZADO#idEstacion` o `DENEGADO#idEstacion#motivo` |
+
+Motivos de denegación: `NO_EXISTE`, `FUGA`, `FUERA_DE_SERVICIO`, `DESCONECTADA`, `YA_REGANDO`.
+
+Ejemplos: `AUTORIZADO#WS-01`, `DENEGADO#WS-02#FUGA`
+
+### Pendiente de definir
+- Orden de CENTRAL a la estación para abrir/cerrar la válvula.
+- Telemetría (caudal y volumen cada segundo).
+- Aviso de fuga y de fuga resuelta.
+- Bloqueo/activación de estaciones desde CENTRAL.
+- Resumen final del riego al operario.
