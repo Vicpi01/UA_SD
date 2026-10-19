@@ -1,7 +1,51 @@
 import java.net.*;
 import java.io.*;
 
-public class EngineFake {
+public class WM_WS_E {
+    private final int id;
+    private String estado;
+    private boolean riego;
+    private int caudal;
+    private boolean fuga;
+
+    WM_WS_E(int id) {
+        this.id = id;
+        this.estado = "Disponible";
+        this.riego = false;
+        this.caudal = 0;
+        this.fuga = false;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public void regar() {
+        this.estado = "Regando";
+        this.riego = true;
+    }
+
+    public void pararRiego() {
+        this.estado = "Disponible";
+        this.riego = false;
+    }
+
+    public String getEstado() {
+        return estado;
+    }
+
+    public int getCaudal() {
+        return caudal;
+    }
+
+    public void setCaudal(int caudal) {
+        this.caudal = caudal;
+    }
+
+    public boolean hayFuga() {
+        return fuga;
+    }
+
     public static void main(String[] args) throws IOException {
         try {
             int puerto = Integer.parseInt(args[0]);
