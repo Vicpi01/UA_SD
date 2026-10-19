@@ -7,10 +7,10 @@ public class TestRegisterClient {
              PrintWriter out = new PrintWriter(s.getOutputStream(), true);
              BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream()))) {
 
-            out.println("REGISTER#WS-01#Parque Central");
+            out.println("REGISTER#WS-02#Parque segundario");
             System.out.println("CENTRAL respondió: " + in.readLine());
 
-            out.println("HOLA");   // mensaje inválido a propósito
+            out.println("HOLA");   
             System.out.println("CENTRAL respondió: " + in.readLine());
         }
     }

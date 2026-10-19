@@ -1,10 +1,12 @@
 import java.io.*;
 import java.net.*;
+import java.sql.*;
 
 public class WM_Central {
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws Exception {
         // Si no se pasa puerto, usamos 7000 para poder probar fácilmente
         int puerto = args.length > 0 ? Integer.parseInt(args[0]) : 7000;
+        initBD();
 
         try (ServerSocket servidor = new ServerSocket(puerto)) {
             System.out.println("CENTRAL escuchando en el puerto " + puerto);
@@ -31,12 +33,44 @@ public class WM_Central {
         }
     }
 
+    static final String DB_URL = "jdbc:sqlite:central.db";
+    
+    // Crea el fichero central.db y la tabla si no existen
+    static void initBD() throws SQLException {
+        try (Connection c = DriverManager.getConnection(DB_URL);
+             Statement st = c.createStatement()) {
+            st.execute("CREATE TABLE IF NOT EXISTS estaciones ("
+                     + "id TEXT PRIMARY KEY, "
+                     + "ubicacion TEXT NOT NULL)");
+        }
+    }
+
+
+    // Guarda la estación; si el id ya existía, actualiza la ubicación
+    static boolean registrar(String id, String ubicacion) {
+        String sql = "INSERT OR REPLACE INTO estaciones (id, ubicacion) VALUES (?, ?)";
+        try (Connection c = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, id);
+            ps.setString(2, ubicacion);
+            ps.executeUpdate();
+            return true;
+        } catch (SQLException e) {
+            System.out.println("Error BD: " + e.getMessage());
+            return false;
+        }
+    }
+
+
+
     // Aquí vivirá la lógica del protocolo
     static String procesar(String mensaje) {
         String[] campos = mensaje.split("#");
         if (campos[0].equals("REGISTER") && campos.length == 3) {
-            return "OK";
+            return registrar(campos[1], campos[2]) ? "OK" : "KO#error de base de datos";
         }
         return "KO#formato invalido";
     }
+
+    
 }
