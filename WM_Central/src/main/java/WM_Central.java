@@ -1,12 +1,15 @@
 import java.io.*;
 import java.net.*;
 import java.sql.*;
-
+import java.util.*;
+import java.util.concurrent.*;
 public class WM_Central {
     public static void main(String[] args) throws Exception {
         // Si no se pasa puerto, usamos 7000 para poder probar fácilmente
         int puerto = args.length > 0 ? Integer.parseInt(args[0]) : 7000;
         initBD();
+        cargarEstaciones();
+        mostrarPanel();
 
         try (ServerSocket servidor = new ServerSocket(puerto)) {
             System.out.println("CENTRAL escuchando en el puerto " + puerto);
@@ -19,17 +22,29 @@ public class WM_Central {
 
     // Atiende a UN cliente (se ejecuta en su propio hilo)
     static void atender(Socket cliente) {
+        String idEstacion = null;
         try (cliente;
-             BufferedReader in = new BufferedReader(new InputStreamReader(cliente.getInputStream()));
-             PrintWriter out = new PrintWriter(cliente.getOutputStream(), true)) {
-
+             InputStream in = new BufferedInputStream(cliente.getInputStream());
+             OutputStream out = cliente.getOutputStream()) {
+            
             String linea;
-            while ((linea = in.readLine()) != null) {
+            while ((linea = Trama.recibir(in, out)) != null) {
                 System.out.println("Recibido: " + linea);
-                out.println(procesar(linea));
+                String respuesta = procesar(linea);
+                if (respuesta.equals("OK")
+                        && (linea.startsWith("REGISTER#") || linea.startsWith("AUTH#"))) {
+                    idEstacion = linea.split("#")[1];
+                }
+                Trama.enviar(in, out, respuesta);
             }
         } catch (IOException e) {
             System.out.println("Conexión cerrada: " + e.getMessage());
+        } finally {
+            if (idEstacion != null) {
+                Estacion est = estaciones.get(idEstacion);
+                if (est != null) est.estado = "DESCONECTADA";
+                mostrarPanel();
+            }
         }
     }
 
@@ -54,6 +69,10 @@ public class WM_Central {
             ps.setString(1, id);
             ps.setString(2, ubicacion);
             ps.executeUpdate();
+            Estacion e = new Estacion(id, ubicacion);
+            e.estado = "DISPONIBLE";
+            estaciones.put(id, e);
+            mostrarPanel();
             return true;
         } catch (SQLException e) {
             System.out.println("Error BD: " + e.getMessage());
@@ -69,7 +88,44 @@ public class WM_Central {
         if (campos[0].equals("REGISTER") && campos.length == 3) {
             return registrar(campos[1], campos[2]) ? "OK" : "KO#error de base de datos";
         }
+        if (campos[0].equals("AUTH") && campos.length == 2) {
+            Estacion e = estaciones.get(campos[1]);
+            if (e == null) return "KO#estacion no registrada";
+            e.estado = "DISPONIBLE";
+            mostrarPanel();
+            return "OK";
+        }
         return "KO#formato invalido";
+    }
+
+
+
+    static class Estacion {
+    final String id, ubicacion;
+    volatile String estado = "DESCONECTADA";
+    Estacion(String id, String ubicacion) { this.id = id; this.ubicacion = ubicacion; }
+}
+
+    static final Map<String, Estacion> estaciones = new ConcurrentHashMap<>();
+
+    // Lee la BD y deja todas las estaciones como DESCONECTADA
+    static void cargarEstaciones() throws SQLException {
+        try (Connection c = DriverManager.getConnection(DB_URL);
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT id, ubicacion FROM estaciones")) {
+            while (rs.next()) {
+                estaciones.put(rs.getString("id"),
+                               new Estacion(rs.getString("id"), rs.getString("ubicacion")));
+            }
+        }
+    }
+
+    static void mostrarPanel() {
+        System.out.println("=== ESTACIONES ===");
+        for (Estacion e : estaciones.values()) {
+            System.out.printf("%-8s %-20s %s%n", e.id, e.ubicacion, e.estado);
+        }
+        System.out.println("==================");
     }
 
     
