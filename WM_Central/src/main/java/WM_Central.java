@@ -1,8 +1,18 @@
-import java.io.*;
-import java.net.*;
-import java.sql.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.BufferedInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 public class WM_Central {
     public static void main(String[] args) throws Exception {
         // Si no se pasa puerto, usamos 7000 para poder probar fácilmente
@@ -27,16 +37,22 @@ public class WM_Central {
              InputStream in = new BufferedInputStream(cliente.getInputStream());
              OutputStream out = cliente.getOutputStream()) {
             
+            cliente.setSoTimeout(5000);   // si pasan 5 s sin recibir nada, se corta
+            
             String linea;
             while ((linea = Trama.recibir(in, out)) != null) {
-                System.out.println("Recibido: " + linea);
+                if (!linea.startsWith("PING#")) System.out.println("Recibido: " + linea);
+            
                 String respuesta = procesar(linea);
+            
                 if (respuesta.equals("OK")
                         && (linea.startsWith("REGISTER#") || linea.startsWith("AUTH#"))) {
                     idEstacion = linea.split("#")[1];
                 }
                 Trama.enviar(in, out, respuesta);
             }
+        } catch (SocketTimeoutException e) {
+            System.out.println("Sin latidos de " + idEstacion + ": se marca como desconectada");
         } catch (IOException e) {
             System.out.println("Conexión cerrada: " + e.getMessage());
         } finally {
@@ -95,6 +111,12 @@ public class WM_Central {
             mostrarPanel();
             return "OK";
         }
+
+        if (campos[0].equals("PING") && campos.length == 2) return "OK";
+        if (campos[0].equals("FAULT") && campos.length == 2) return cambiarEstado(campos[1], "FUGA");
+        if (campos[0].equals("RECOVER") && campos.length == 2) return cambiarEstado(campos[1], "DISPONIBLE");
+
+
         return "KO#formato invalido";
     }
 
@@ -126,6 +148,15 @@ public class WM_Central {
             System.out.printf("%-8s %-20s %s%n", e.id, e.ubicacion, e.estado);
         }
         System.out.println("==================");
+    }
+
+
+    static String cambiarEstado(String id, String estado) {
+       Estacion e = estaciones.get(id);
+       if (e == null) return "KO#estacion no registrada";
+       e.estado = estado;
+       mostrarPanel();
+       return "OK";
     }
 
     
