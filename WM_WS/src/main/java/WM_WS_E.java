@@ -46,6 +46,10 @@ public class WM_WS_E {
         return fuga;
     }
 
+    private void conexionMonitor() {
+        
+    }
+
     public static void main(String[] args) throws IOException {
         try {
             int puerto = Integer.parseInt(args[0]);

@@ -37,7 +37,7 @@ public class WM_WS_M {
         }
     }
 
-    private void registrarEnCentral() {
+    private boolean registrarEnCentral() {
         try {
             Socket socketCentral = new Socket(host, puertoCentral);
             PrintWriter out = new PrintWriter(socketCentral.getOutputStream(), true);
@@ -48,8 +48,10 @@ public class WM_WS_M {
             System.out.println("Conexión con la Central: " + respuesta);
 
             socketCentral.close();
+            return true;
         } catch (IOException e) {
             System.out.println("Error al registrar en la Central: " + e.getMessage());
+            return false;
         }
     }
 
@@ -83,11 +85,15 @@ public class WM_WS_M {
         // A su vez, va a ir recibiendo mensajes de la Central y va a ir mandando
         // ordenes al Engine conforme a lo que le vaya recibiendo de la Central
 
+        boolean conexion = false;
+
         try {
+            conexion = Monitor.registrarEnCentral();
             while (true) {
                 Monitor.conexionEngine();
-                Monitor.registrarEnCentral();
-                Monitor.conexionCentral();
+                if (conexion) {
+                    Monitor.conexionCentral();
+                }
                 Thread.sleep(1000); // Espera 1 segundo antes de la siguiente iteración
             }
         } catch (InterruptedException e) {
