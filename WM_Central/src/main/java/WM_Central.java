@@ -15,8 +15,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 public class WM_Central {
     public static void main(String[] args) throws Exception {
-        // Si no se pasa puerto, usamos 7000 para poder probar fácilmente
-        int puerto = args.length > 0 ? Integer.parseInt(args[0]) : 7000;
+        if (args.length < 2) {
+            System.out.println("Uso: WM_Central <puerto> <broker host:puerto>");
+            return;
+        }
+        int puerto = Integer.parseInt(args[0]);
+        String broker = args[1];   // todavía no lo usamos, será para Kafka
+        System.out.println("Broker Kafka configurado: " + broker);
+
         initBD();
         cargarEstaciones();
         mostrarPanel();
@@ -64,7 +70,8 @@ public class WM_Central {
         }
     }
 
-    static final String DB_URL = "jdbc:sqlite:central.db";
+    static final String DB_URL = "jdbc:sqlite:"
+        + System.getenv().getOrDefault("DB_PATH", "central.db");
     
     // Crea el fichero central.db y la tabla si no existen
     static void initBD() throws SQLException {

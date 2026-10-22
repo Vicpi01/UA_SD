@@ -3,3 +3,4 @@ target/
 hs_err_pid*.log
 .vscode/
 *.db
+replay_pid*.log
