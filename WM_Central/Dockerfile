@@ -11,4 +11,4 @@ COPY --from=build /app/target/wm-central.jar app.jar
 RUN mkdir -p /data
 ENV DB_PATH=/data/central.db
 EXPOSE 7000
-ENTRYPOINT ["sh", "-c", "exec java -jar app.jar ${CENTRAL_PORT:-7000} ${KAFKA_BROKER:-localhost:9092}"]
+ENTRYPOINT ["java", "-jar", "app.jar"]
