@@ -24,9 +24,11 @@ public class TestRegisterClient {
                 System.out.println(m + " -> " + Trama.recibir(in, out));
             }
 
-            // Sin mandar nada: CENTRAL debe marcar WS-01 como DESCONECTADA a los 5 s
-            System.out.println("Esperando 7 s sin latidos...");
-            Thread.sleep(7000);
+            for (int i = 0; i < 60; i++) {
+                Trama.enviar(in, out, "PING#WS-01");
+                Trama.recibir(in, out);
+                Thread.sleep(1000);
+            }
         }
     }
 }

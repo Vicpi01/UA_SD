@@ -13,6 +13,16 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
+import java.util.List;
+import java.util.Properties;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+
+
+
 public class WM_Central {
     public static void main(String[] args) throws Exception {
         int puerto = Integer.parseInt(args.length > 0 ? args[0]
@@ -24,6 +34,7 @@ public class WM_Central {
         initBD();
         cargarEstaciones();
         mostrarPanel();
+        iniciarKafka(broker);
 
         try (ServerSocket servidor = new ServerSocket(puerto)) {
             System.out.println("CENTRAL escuchando en el puerto " + puerto);
@@ -162,6 +173,50 @@ public class WM_Central {
        e.estado = estado;
        mostrarPanel();
        return "OK";
+    }
+
+
+    static void iniciarKafka(String broker) {
+    new Thread(() -> {
+        String des = "org.apache.kafka.common.serialization.StringDeserializer";
+        String ser = "org.apache.kafka.common.serialization.StringSerializer";
+        Properties pc = new Properties();
+        pc.put("bootstrap.servers", broker);
+        pc.put("group.id", "central");
+        pc.put("key.deserializer", des);
+        pc.put("value.deserializer", des);
+        pc.put("auto.offset.reset", "earliest");
+        Properties pp = new Properties();
+        pp.put("bootstrap.servers", broker);
+        pp.put("key.serializer", ser);
+        pp.put("value.serializer", ser);
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(pc);
+             KafkaProducer<String, String> producer = new KafkaProducer<>(pp)) {
+            consumer.subscribe(List.of("fo-peticiones"));
+            System.out.println("Kafka: escuchando fo-peticiones");
+            while (true) {
+                for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofMillis(500))) {
+                    System.out.println("Petición de riego: " + r.value());
+                    String[] c = r.value().split("#");          // idFO#idWS
+                    String idFO = c[0];
+                    String respuesta;
+                    if (c.length != 2) {
+                        respuesta = idFO + "#KO#formato invalido";
+                    } else {
+                        Estacion e = estaciones.get(c[1]);
+                        if (e == null) respuesta = idFO + "#KO#estacion inexistente";
+                        else if (!e.estado.equals("DISPONIBLE"))
+                            respuesta = idFO + "#KO#estacion no disponible (" + e.estado + ")";
+                        else respuesta = idFO + "#OK#" + c[1];
+                    }
+                    producer.send(new ProducerRecord<>("fo-respuestas", idFO, respuesta));
+                }
+            }
+            } catch (Exception ex) {
+                System.out.println("Error Kafka: " + ex.getMessage());
+            }
+        }).start();
     }
 
     
