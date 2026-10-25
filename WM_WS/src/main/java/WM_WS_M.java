@@ -1,103 +1,221 @@
-import java.net.*;
 import java.io.*;
+import java.net.*;
+import java.util.Arrays;
 
+/*
+El Monitor mantiene el servidor al que se conecta el Engine y una conexión
+TCP con CENTRAL. Recibe del Engine el estado de salud de la estación y envía
+a CENTRAL el registro, los latidos y los avisos de avería o recuperación.
+*/
 public class WM_WS_M {
-    private final int id;
-    private String ubicacion;
-    private int puertoCentral;
-    private int puertoMonitor;
-    private String host;
-    private String estado;
-    private Boolean fuga;
+    private final String id;
+    private final String ubicacion;
+    private final int puertoMonitor;
+    private final String hostCentral;
+    private final int puertoCentral;
 
-    WM_WS_M(int id, String ubicacion, int puertoCentral, int puertoMonitor, String host) {
+    private Socket socketCentral;
+    private InputStream inCentral;
+    private OutputStream outCentral;
+    private boolean enAveria;
+    private boolean averiaAvisada;
+
+    WM_WS_M(String id, String ubicacion, int puertoMonitor, String hostCentral, int puertoCentral) {
         this.id = id;
         this.ubicacion = ubicacion;
-        this.puertoCentral = puertoCentral;
         this.puertoMonitor = puertoMonitor;
-        this.host = host;
-        this.estado = null;
-        this.fuga = null;
+        this.hostCentral = hostCentral;
+        this.puertoCentral = puertoCentral;
     }
 
-    private void conexionEngine() {
-        try {
-            ServerSocket socketEngine = new ServerSocket(puertoMonitor);
-            Socket respuestaEngine = socketEngine.accept();
-            PrintWriter out = new PrintWriter(respuestaEngine.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(respuestaEngine.getInputStream()));
-
-            out.println("Cuál es tu estado?");
-            String respuesta = in.readLine();
-            System.out.println("Respuesta del Engine: " + respuesta);
-
-            socketEngine.close();
-        } catch (IOException e) {
-            System.out.println("Error al conectar con el Engine: " + e.getMessage());
-        }
+    /*
+    CENTRAL responde a cada mensaje antes de que el Monitor envíe el
+    siguiente. Trama se encarga del formato y de confirmar el intercambio.
+    */
+    private String intercambiar(String mensaje) throws IOException {
+        Trama.enviar(inCentral, outCentral, mensaje);
+        return Trama.recibir(inCentral, outCentral);
     }
 
-    private boolean registrarEnCentral() {
+    /*
+    Abre la conexión persistente con CENTRAL e inicia el protocolo de trama.
+    Comprueba si la estación existe y, si no está registrada, la da de alta
+    con su ubicación antes de volver a autenticarse.
+    */
+    private boolean conectarCentral() {
         try {
-            Socket socketCentral = new Socket(host, puertoCentral);
-            PrintWriter out = new PrintWriter(socketCentral.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socketCentral.getInputStream()));
+            socketCentral = new Socket();
+            socketCentral.connect(new InetSocketAddress(hostCentral, puertoCentral), 3000);
+            socketCentral.setSoTimeout(5000);
+            inCentral = new BufferedInputStream(socketCentral.getInputStream());
+            outCentral = socketCentral.getOutputStream();
+            Trama.iniciar(inCentral, outCentral);
 
-            out.println("ID: " + id + ", Ubicación: " + ubicacion);
-            String respuesta = in.readLine();
-            System.out.println("Conexión con la Central: " + respuesta);
+            String respuesta = intercambiar("AUTH#" + id);
+            if ("KO#estacion no registrada".equals(respuesta)) {
+                respuesta = intercambiar("REGISTER#" + id + "#" + ubicacion);
+                if (!"OK".equals(respuesta)) {
+                    System.out.println("Registro rechazado por CENTRAL: " + respuesta);
+                    cerrarCentral();
+                    return false;
+                }
+                respuesta = intercambiar("AUTH#" + id);
+            }
 
-            socketCentral.close();
+            if (!"OK".equals(respuesta)) {
+                System.out.println("Autenticación rechazada por CENTRAL: " + respuesta);
+                cerrarCentral();
+                return false;
+            }
+
+            averiaAvisada = false;
+            System.out.println("Monitor autenticado en CENTRAL: " + id);
             return true;
         } catch (IOException e) {
-            System.out.println("Error al registrar en la Central: " + e.getMessage());
+            System.out.println("No se pudo conectar con CENTRAL: " + e.getMessage());
+            cerrarCentral();
             return false;
         }
     }
 
-    private void conexionCentral() {
-        try {
-            Socket socketCentral = new Socket(host, puertoCentral);
-            PrintWriter out = new PrintWriter(socketCentral.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socketCentral.getInputStream()));
+    /*
+    Envía un latido para que CENTRAL sepa que el Monitor sigue activo.
+    Cuando cambia el estado de la estación, comunica la avería o recuperación.
+    */
+    private void mantenerCentral() throws IOException {
+        String respuesta = intercambiar("PING#" + id);
+        if (!"OK".equals(respuesta)) {
+            throw new IOException("Respuesta inesperada al PING: " + respuesta);
+        }
 
-            out.println("Mi estado es: " + estado);
-            String respuesta = in.readLine();
-            System.out.println("Respuesta de la Central: " + respuesta);
-
-            socketCentral.close();
-        } catch (IOException e) {
-            System.out.println("Error al conectar con la Central: " + e.getMessage());
+        if (enAveria != averiaAvisada) {
+            String mensaje = enAveria ? "FAULT#" + id : "RECOVER#" + id;
+            respuesta = intercambiar(mensaje);
+            if (!"OK".equals(respuesta)) {
+                throw new IOException("CENTRAL rechazó " + mensaje + ": " + respuesta);
+            }
+            averiaAvisada = enAveria;
+            System.out.println("CENTRAL actualizado: " + mensaje);
         }
     }
 
-    public static void main(String[] args) throws IOException, InterruptedException {
-        int puertoMonitor = Integer.parseInt(args[0]);
-        String host = args[1];
-        int puertoCentral = Integer.parseInt(args[2]);
-        int id = Integer.parseInt(args[3]);
-        String ubicacion = args[4];
-
-        WM_WS_M Monitor = new WM_WS_M(id, ubicacion, puertoCentral, puertoMonitor, host);
-
-        // Una vez creado el Monitor lo conecto con el Engine y cada
-        // segundo va preguntando por el estado y recibe la respuesta del Engine
-        // A su vez, va a ir recibiendo mensajes de la Central y va a ir mandando
-        // ordenes al Engine conforme a lo que le vaya recibiendo de la Central
-
-        boolean conexion = false;
-
+    /*
+    Cierra el protocolo y el socket de CENTRAL y limpia las referencias
+    para que se pueda volver a conectar más adelante.
+    */
+    private void cerrarCentral() {
         try {
-            conexion = Monitor.registrarEnCentral();
-            while (true) {
-                Monitor.conexionEngine();
-                if (conexion) {
-                    Monitor.conexionCentral();
-                }
-                Thread.sleep(1000); // Espera 1 segundo antes de la siguiente iteración
+            if (outCentral != null) {
+                Trama.cerrar(outCentral);
             }
+            if (socketCentral != null) {
+                socketCentral.close();
+            }
+        } catch (IOException ignored) { }
+        socketCentral = null;
+        inCentral = null;
+        outCentral = null;
+    }
+
+    /*
+    Atiende una conexión del Engine. La primera línea identifica el protocolo;
+    después pide el estado de salud aproximadamente cada segundo y comunica
+    los cambios a CENTRAL.
+    */
+    private void atenderEngine(Socket engine) {
+        try (engine) {
+            engine.setSoTimeout(3000);
+            var out = engine.getOutputStream();
+            var in = new java.io.BufferedReader(new java.io.InputStreamReader(engine.getInputStream()));
+
+            if (!"CONECTAR".equals(in.readLine())) {
+                out.write("KO#NO_ES_ENGINE\n".getBytes());
+                return;
+            }
+            out.write(("ID#" + id + "#" + ubicacion + "\n").getBytes());
+            out.flush();
+            System.out.println("Engine conectado");
+
+            while (true) {
+                out.write(("SALUD#" + id + "\n").getBytes());
+                out.flush();
+                String respuesta = in.readLine();
+                if (respuesta == null) throw new IOException("El Engine cerró la conexión");
+
+                boolean averiaAnterior = enAveria;
+                enAveria = !respuesta.startsWith("OK");
+                if (averiaAnterior != enAveria) {
+                    System.out.println(enAveria ? "Avería detectada" : "Avería resuelta");
+                }
+                mantenerCentral();
+                Thread.sleep(1000);
+            }
+        } catch (SocketTimeoutException e) {
+            enAveria = true;
+            System.out.println("El Engine no responde");
+        } catch (IOException e) {
+            enAveria = true;
+            System.out.println("Conexión con Engine perdida: " + e.getMessage());
         } catch (InterruptedException e) {
-            System.out.println("Ha surgido un error: " + e.getMessage());
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /*
+    Mantiene el servidor disponible para el Engine. El tiempo de espera de
+    accept permite seguir enviando PING a CENTRAL mientras espera conexiones.
+    Si CENTRAL se desconecta, intenta restablecer la conexión.
+    */
+    private void ejecutar() {
+        try (ServerSocket servidor = new ServerSocket(puertoMonitor)) {
+            servidor.setSoTimeout(1000);
+            System.out.println("Esperando al Engine en el puerto " + puertoMonitor);
+            while (true) {
+                try {
+                    mantenerCentral();
+                } catch (IOException e) {
+                    System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
+                    cerrarCentral();
+                    while (!conectarCentral()) {
+                        Thread.sleep(5000);
+                    }
+                }
+
+                try {
+                    atenderEngine(servidor.accept());
+                } catch (SocketTimeoutException ignored) {
+                    // Revisa CENTRAL y espera otra conexión del Engine.
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Error en el servidor del Engine: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            cerrarCentral();
+        }
+    }
+
+    /*
+    Los argumentos son: puerto local del Monitor, host y puerto de CENTRAL,
+    ID de la estación y ubicación. La ubicación puede ocupar varios argumentos.
+    */
+    public static void main(String[] args) {
+        if (args.length < 5) {
+            System.out.println("Uso: WM_WS_M <puertoMonitor> <hostCentral> <puertoCentral> <id> <ubicacion>");
+            return;
+        }
+        try {
+            String ubicacion = String.join(" ", Arrays.copyOfRange(args, 4, args.length));
+            WM_WS_M monitor = new WM_WS_M(args[3], ubicacion, Integer.parseInt(args[0]), args[1], Integer.parseInt(args[2]));
+            while (!monitor.conectarCentral()) {
+                Thread.sleep(5000);
+            }
+            monitor.ejecutar();
+        } catch (NumberFormatException e) {
+            System.out.println("Los puertos deben ser números");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }
