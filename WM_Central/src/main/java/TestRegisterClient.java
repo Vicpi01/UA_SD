@@ -24,9 +24,11 @@ public class TestRegisterClient {
                 System.out.println(m + " -> " + Trama.recibir(in, out));
             }
 
-            for (int i = 0; i < 60; i++) {
+            for (int i = 0; i < 300; i++) {
                 Trama.enviar(in, out, "PING#WS-01");
                 Trama.recibir(in, out);
+                if (i == 90) { Trama.enviar(in, out, "FAULT#WS-01");   System.out.println("FAULT -> " + Trama.recibir(in, out)); }
+                if (i == 100) { Trama.enviar(in, out, "RECOVER#WS-01"); System.out.println("RECOVER -> " + Trama.recibir(in, out)); }
                 Thread.sleep(1000);
             }
         }

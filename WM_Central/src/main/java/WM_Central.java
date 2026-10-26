@@ -129,7 +129,7 @@ public class WM_Central {
         }
 
         if (campos[0].equals("PING") && campos.length == 2) return "OK";
-        if (campos[0].equals("FAULT") && campos.length == 2) return cambiarEstado(campos[1], "FUGA");
+        if (campos[0].equals("FAULT") && campos.length == 2) return fuga(campos[1]);
         if (campos[0].equals("RECOVER") && campos.length == 2) return cambiarEstado(campos[1], "DISPONIBLE");
 
 
@@ -139,10 +139,12 @@ public class WM_Central {
 
 
     static class Estacion {
-    final String id, ubicacion;
-    volatile String estado = "DESCONECTADA";
-    Estacion(String id, String ubicacion) { this.id = id; this.ubicacion = ubicacion; }
-}
+        final String id, ubicacion;
+        volatile String estado = "DESCONECTADA";
+        volatile double caudal = 0, volumen = 0;
+        volatile String operario = "-";
+        Estacion(String id, String ubicacion) { this.id = id; this.ubicacion = ubicacion; }
+    }
 
     static final Map<String, Estacion> estaciones = new ConcurrentHashMap<>();
 
@@ -161,7 +163,9 @@ public class WM_Central {
     static void mostrarPanel() {
         System.out.println("=== ESTACIONES ===");
         for (Estacion e : estaciones.values()) {
-            System.out.printf("%-8s %-20s %s%n", e.id, e.ubicacion, e.estado);
+            String extra = e.estado.equals("REGANDO")
+                    ? String.format("%.1f L/min  %.1f L  %s", e.caudal, e.volumen, e.operario) : "";
+            System.out.printf("%-8s %-20s %-12s %s%n", e.id, e.ubicacion, e.estado, extra);
         }
         System.out.println("==================");
     }
@@ -176,48 +180,122 @@ public class WM_Central {
     }
 
 
-    static void iniciarKafka(String broker) {
-    new Thread(() -> {
-        String des = "org.apache.kafka.common.serialization.StringDeserializer";
-        String ser = "org.apache.kafka.common.serialization.StringSerializer";
-        Properties pc = new Properties();
-        pc.put("bootstrap.servers", broker);
-        pc.put("group.id", "central");
-        pc.put("key.deserializer", des);
-        pc.put("value.deserializer", des);
-        pc.put("auto.offset.reset", "earliest");
-        Properties pp = new Properties();
-        pp.put("bootstrap.servers", broker);
-        pp.put("key.serializer", ser);
-        pp.put("value.serializer", ser);
+    static KafkaProducer<String, String> productor;
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(pc);
-             KafkaProducer<String, String> producer = new KafkaProducer<>(pp)) {
-            consumer.subscribe(List.of("fo-peticiones"));
-            System.out.println("Kafka: escuchando fo-peticiones");
-            while (true) {
-                for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofMillis(500))) {
-                    System.out.println("Petición de riego: " + r.value());
-                    String[] c = r.value().split("#");          // idFO#idWS
-                    String idFO = c[0];
-                    String respuesta;
-                    if (c.length != 2) {
-                        respuesta = idFO + "#KO#formato invalido";
-                    } else {
-                        Estacion e = estaciones.get(c[1]);
-                        if (e == null) respuesta = idFO + "#KO#estacion inexistente";
-                        else if (!e.estado.equals("DISPONIBLE"))
-                            respuesta = idFO + "#KO#estacion no disponible (" + e.estado + ")";
-                        else respuesta = idFO + "#OK#" + c[1];
-                    }
-                    producer.send(new ProducerRecord<>("fo-respuestas", idFO, respuesta));
-                }
-            }
-            } catch (Exception ex) {
-                System.out.println("Error Kafka: " + ex.getMessage());
-            }
-        }).start();
+    static void enviarKafka(String topic, String clave, String valor) {
+        try {
+            if (productor != null) productor.send(new ProducerRecord<>(topic, clave, valor));
+        } catch (Exception e) {
+            System.out.println("Kafka no disponible: " + e.getMessage());
+        }
     }
 
+    static Properties propsConsumidor(String broker, String grupo) {
+        Properties p = new Properties();
+        p.put("bootstrap.servers", broker);
+        p.put("group.id", grupo);
+        p.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        p.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        p.put("auto.offset.reset", "earliest");
+        return p;
+    }
+
+    static void iniciarKafka(String broker) {
+        Properties pp = new Properties();
+        pp.put("bootstrap.servers", broker);
+        pp.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        pp.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+        pp.put("max.block.ms", "3000");
+        productor = new KafkaProducer<>(pp);
+
+        new Thread(() -> escuchar(broker, "central", "fo-peticiones", WM_Central::atenderPeticion)).start();
+        new Thread(() -> escuchar(broker, "central-estado", "ws-estado", WM_Central::procesarEstado)).start();
+    }
+
+    static void escuchar(String broker, String grupo, String topic, java.util.function.Consumer<String> accion) {
+        try (KafkaConsumer<String, String> c = new KafkaConsumer<>(propsConsumidor(broker, grupo))) {
+            c.subscribe(List.of(topic));
+            System.out.println("Kafka: escuchando " + topic);
+            while (true) {
+                for (ConsumerRecord<String, String> r : c.poll(Duration.ofMillis(500))) {
+                    try { accion.accept(r.value()); }
+                    catch (Exception ex) { System.out.println("Mensaje inválido en " + topic + ": " + r.value()); }
+                }
+            }
+        } catch (Exception ex) {
+            System.out.println("Error Kafka (" + topic + "): " + ex.getMessage());
+        }
+    }
+
+
+    static final int DURACION_RIEGO = 30;   // segundos, provisional
+
+    static void atenderPeticion(String valor) {
+        System.out.println("Petición de riego: " + valor);
+        String[] c = valor.split("#");                       // idFO#idWS
+        if (c.length != 2) return;
+        String idFO = c[0];
+        Estacion e = estaciones.get(c[1]);
+        String respuesta;
+        if (e == null) {
+            respuesta = idFO + "#KO#estacion inexistente";
+        } else synchronized (e) {
+            if (!e.estado.equals("DISPONIBLE")) {
+                respuesta = idFO + "#KO#estacion no disponible (" + e.estado + ")";
+            } else {
+                e.estado = "REGANDO"; e.operario = idFO; e.caudal = 0; e.volumen = 0;
+                respuesta = idFO + "#OK#" + e.id;
+                enviarKafka("ws-ordenes", e.id, e.id + "#START#" + idFO + "#" + DURACION_RIEGO);
+            }
+        }
+        System.out.println("Respuesta al FO: " + respuesta);
+        enviarKafka("fo-respuestas", idFO, respuesta);
+        mostrarPanel();
+    }
+
+    static void procesarEstado(String valor) {
+        System.out.println("Estado recibido: " + valor);
+        String[] c = valor.split("#");
+        if (c.length < 2) return;
+        Estacion e = estaciones.get(c[0]);
+        if (e == null) { System.out.println("Ignorado: estación desconocida " + c[0]); return; }
     
-}
+        if (c[1].equals("RIEGO") && c.length == 5) {            // idWS#RIEGO#caudal#volumen#idFO
+            if (!e.estado.equals("REGANDO")) {
+                System.out.println("Ignorado: " + e.id + " no está regando (" + e.estado + ")");
+                return;
+            }
+            e.caudal = Double.parseDouble(c[2]);
+            e.volumen = Double.parseDouble(c[3]);
+            e.operario = c[4];
+            enviarKafka("fo-respuestas", c[4], c[4] + "#RIEGO#" + e.id + "#" + c[2] + "#" + c[3]);
+        } else if (c[1].equals("FIN") && c.length == 5) {       // idWS#FIN#volumen#duracion#idFO
+            if (e.estado.equals("REGANDO")) e.estado = "DISPONIBLE";
+            e.caudal = 0; e.volumen = 0; e.operario = "-";
+            enviarKafka("fo-respuestas", c[4], c[4] + "#FIN#" + e.id + "#" + c[2] + "#" + c[3]);
+        } else {
+            System.out.println("Ignorado: mensaje no reconocido");
+            return;
+        }
+        mostrarPanel();
+    }
+
+
+    static String fuga(String id) {
+        Estacion e = estaciones.get(id);
+        if (e == null) return "KO#estacion no registrada";
+        if (e.estado.equals("REGANDO")) {
+            enviarKafka("ws-ordenes", id, id + "#STOP");
+            enviarKafka("fo-respuestas", e.operario, e.operario + "#FUGA#" + id);
+            System.out.println("Riego cortado por fuga en " + id);
+        }
+        e.estado = "FUGA";
+        e.caudal = 0; e.volumen = 0;
+        mostrarPanel();
+        return "OK";
+    }
+
+
+
+
+    }
