@@ -74,10 +74,19 @@ public class WM_Central {
             System.out.println("Sin latidos de " + idEstacion + ": se marca como desconectada");
         } catch (IOException e) {
             System.out.println("Conexión cerrada: " + e.getMessage());
-        } finally {
+        }finally {
             if (idEstacion != null) {
                 Estacion est = estaciones.get(idEstacion);
-                if (est != null) est.estado = "DESCONECTADA";
+                if (est != null) {
+                    if (est.estado.equals("REGANDO")) {
+                        String fo = est.operario;
+                        System.out.println("Monitor caído durante un riego en " + idEstacion + ": se corta el riego");
+                        enviarKafka("ws-ordenes", idEstacion, idEstacion + "#STOP");
+                        enviarKafka("fo-respuestas", fo, fo + "#CAIDA#" + idEstacion);
+                    }
+                    est.estado = "DESCONECTADA";
+                    est.caudal = 0; est.volumen = 0; est.operario = "-";
+                }
                 mostrarPanel();
             }
         }
