@@ -16,6 +16,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.time.Duration;
 import java.util.List;
 import java.util.Properties;
+
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -34,6 +37,7 @@ public class WM_Central {
         initBD();
         cargarEstaciones();
         mostrarPanel();
+        crearTopics(broker);
         iniciarKafka(broker);
 
         try (ServerSocket servidor = new ServerSocket(puerto)) {
@@ -295,6 +299,20 @@ public class WM_Central {
         return "OK";
     }
 
+
+    static void crearTopics(String broker) {
+        Properties p = new Properties();
+        p.put("bootstrap.servers", broker);
+        try (AdminClient admin = AdminClient.create(p)) {
+            admin.createTopics(List.of(
+                    new NewTopic("fo-peticiones", 1, (short) 1),
+                    new NewTopic("fo-respuestas", 1, (short) 1),
+                    new NewTopic("ws-ordenes", 1, (short) 1),
+                    new NewTopic("ws-estado", 1, (short) 1))).all().get();
+        } catch (Exception e) {
+            System.out.println("Topics: " + e.getMessage());   // si ya existen, no pasa nada
+        }
+    }
 
 
 
