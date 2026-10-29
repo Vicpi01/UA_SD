@@ -26,10 +26,10 @@ public class WM_WS_E {
     private int segundosObjetivo;
     private int segundosTranscurridos;
 
-    private final String broker;                 // null = sin Kafka (modo local)
+    private final String broker; // null = sin Kafka (modo local)
     private KafkaProducer<String, String> productor;
     private boolean kafkaIniciado;
-    private volatile String operarioManual;      // operario de la última petición hecha desde la consola
+    private volatile String operarioManual; // operario de la última petición hecha desde la consola
     private final Random azar = new Random();
     private final ConcurrentLinkedQueue<String> comandos = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<String> ordenes = new ConcurrentLinkedQueue<>();
@@ -49,8 +49,6 @@ public class WM_WS_E {
         return String.format(Locale.US, "%.1f", v);
     }
 
-    // ---------- Estado de la estación ----------
-
     private void recalcularEstado() {
         if (riego) estado = "REGANDO";
         else if (fuga) estado = "FUGA";
@@ -68,7 +66,7 @@ public class WM_WS_E {
         segundosObjetivo = segundos;
         segundosTranscurridos = 0;
         volumen = 0;
-        caudal = 10 + azar.nextInt(6);            // entre 10 y 15 L/min
+        caudal = 10 + azar.nextInt(6); // entre 10 y 15 L/min
         recalcularEstado();
         System.out.println("Riego iniciado para " + op + " durante " + segundos + " s");
         mostrarEstado();
@@ -103,11 +101,8 @@ public class WM_WS_E {
     }
 
     private void mostrarEstado() {
-        System.out.printf("WS %s | %s | caudal: %d L/min | volumen: %.2f L | operario: %s%n",
-                id == null ? "sin ID" : id, estado, caudal, volumen, operario);
+        System.out.printf("WS %s | %s | caudal: %d L/min | volumen: %.2f L | operario: %s%n", id == null ? "sin ID" : id, estado, caudal, volumen, operario);
     }
-
-    // ---------- Reloj: un turno por segundo ----------
 
     private void iniciarReloj() {
         ScheduledExecutorService reloj = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -120,7 +115,9 @@ public class WM_WS_E {
 
     private void tick() {
         try {
-            if (id == null) return;                       // aún no conoce su ID (el Monitor no ha conectado)
+            if (id == null) {
+                return; // aún no conoce su ID (el Monitor no ha conectado)
+            }
             procesarComandos();
             procesarOrdenes();
             if (riego) {
@@ -134,8 +131,6 @@ public class WM_WS_E {
             System.out.println("Error en el Engine: " + e.getMessage());
         }
     }
-
-    // ---------- Órdenes de CENTRAL (idWS#ACCION[#idFO#segundos]) ----------
 
     private void procesarOrdenes() {
         String orden;
@@ -166,8 +161,6 @@ public class WM_WS_E {
             }
         }
     }
-
-    // ---------- Teclado ----------
 
     private void leerComandos() {
         Thread teclado = new Thread(() -> {
@@ -215,8 +208,6 @@ public class WM_WS_E {
         publicar("fo-peticiones", op, op + "#" + id + extra);
         System.out.println("Petición enviada a CENTRAL como " + op + ". Esperando autorización...");
     }
-
-    // ---------- Kafka ----------
 
     private void publicar(String topic, String clave, String valor) {
         if (productor == null) return;
@@ -283,8 +274,6 @@ public class WM_WS_E {
             System.out.println("Imposible conectar con CENTRAL (Kafka): " + e.getMessage());
         }
     }
-
-    // ---------- Conexión con el Monitor ----------
 
     public static void main(String[] args) {
         if (args.length == 0) {
