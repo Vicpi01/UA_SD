@@ -34,7 +34,11 @@ public class WM_WS_M {
     */
     private String intercambiar(String mensaje) throws IOException {
         Trama.enviar(inCentral, outCentral, mensaje);
-        return Trama.recibir(inCentral, outCentral);
+        String respuesta = Trama.recibir(inCentral, outCentral);
+        if (respuesta == null) {
+            throw new EOFException("Central ha cerrado la conexión");
+        }
+        return respuesta;
     }
 
     /*
@@ -79,7 +83,7 @@ public class WM_WS_M {
     }
 
     /*
-    Envía un latido para que CENTRAL sepa que el Monitor sigue activo.
+    Envía un ping para que CENTRAL sepa que el Monitor sigue activo.
     Cuando cambia el estado de la estación, comunica la avería o recuperación.
     */
     private void mantenerCentral() throws IOException {
@@ -96,6 +100,22 @@ public class WM_WS_M {
             }
             averiaAvisada = enAveria;
             System.out.println("CENTRAL actualizado: " + mensaje);
+        }
+    }
+
+    /*
+    Envuelve mantenerCentral() gestionando la reconexión automática si CENTRAL
+    se cae o se reinicia, permitiendo llamarlo tanto esperando al Engine como dentro del bucle de salud.
+    */
+    private void sincronizarCentral() throws InterruptedException {
+        try {
+            mantenerCentral();
+        } catch (IOException e) {
+            System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
+            cerrarCentral();
+            while (!conectarCentral()) {
+                Thread.sleep(5000);
+            }
         }
     }
 
@@ -122,19 +142,22 @@ public class WM_WS_M {
     después pide el estado de salud aproximadamente cada segundo y comunica
     los cambios a CENTRAL.
     */
-    private void atenderEngine(Socket engine) {
+    private void atenderEngine(Socket engine) throws InterruptedException {
+        boolean identificado = false;
         try (engine) {
             engine.setSoTimeout(3000);
-            var out = engine.getOutputStream();
-            var in = new java.io.BufferedReader(new java.io.InputStreamReader(engine.getInputStream()));
+            OutputStream out = engine.getOutputStream();
+            BufferedReader in = new BufferedReader(new InputStreamReader(engine.getInputStream()));
 
             if (!"CONECTAR".equals(in.readLine())) {
                 out.write("KO#NO_ES_ENGINE\n".getBytes());
+                out.flush();
                 return;
             }
+            identificado = true;
             out.write(("ID#" + id + "#" + ubicacion + "\n").getBytes());
             out.flush();
-            System.out.println("Engine conectado");
+            System.out.println("Engine conectado a Monitor (" + id + ")");
 
             while (true) {
                 out.write(("SALUD#" + id + "\n").getBytes());
@@ -145,19 +168,23 @@ public class WM_WS_M {
                 boolean averiaAnterior = enAveria;
                 enAveria = !respuesta.startsWith("OK");
                 if (averiaAnterior != enAveria) {
-                    System.out.println(enAveria ? "Avería detectada" : "Avería resuelta");
+                    System.out.println(enAveria ? "Avería/Fuga detectada en WS (" + respuesta + ")" : "Avería/Fuga resuelta en WS");
                 }
-                mantenerCentral();
+                sincronizarCentral();
                 Thread.sleep(1000);
             }
         } catch (SocketTimeoutException e) {
-            enAveria = true;
-            System.out.println("El Engine no responde");
+            if (identificado) {
+                enAveria = true;
+                System.out.println("El Engine no responde (Timeout): reportando avería a CENTRAL");
+                sincronizarCentral();
+            }
         } catch (IOException e) {
-            enAveria = true;
-            System.out.println("Conexión con Engine perdida: " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            if (identificado) {
+                enAveria = true;
+                System.out.println("Conexión con Engine perdida (" + e.getMessage() + "): reportando avería a CENTRAL");
+                sincronizarCentral();
+            }
         }
     }
 
@@ -171,16 +198,7 @@ public class WM_WS_M {
             servidor.setSoTimeout(1000);
             System.out.println("Esperando al Engine en el puerto " + puertoMonitor);
             while (true) {
-                try {
-                    mantenerCentral();
-                } catch (IOException e) {
-                    System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
-                    cerrarCentral();
-                    while (!conectarCentral()) {
-                        Thread.sleep(5000);
-                    }
-                }
-
+                sincronizarCentral();
                 try {
                     atenderEngine(servidor.accept());
                 } catch (SocketTimeoutException ignored) {
