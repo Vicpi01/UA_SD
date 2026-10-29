@@ -99,6 +99,19 @@ public class WM_WS_M {
         }
     }
 
+
+    private void mantenerCentralSeguro() throws InterruptedException {
+        try {
+            mantenerCentral();
+        } catch (IOException e) {
+            System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
+            cerrarCentral();
+            while (!conectarCentral()) Thread.sleep(5000);
+        }
+    }
+
+
+
     /*
     Cierra el protocolo y el socket de CENTRAL y limpia las referencias
     para que se pueda volver a conectar más adelante.
@@ -147,7 +160,7 @@ public class WM_WS_M {
                 if (averiaAnterior != enAveria) {
                     System.out.println(enAveria ? "Avería detectada" : "Avería resuelta");
                 }
-                mantenerCentral();
+                mantenerCentralSeguro();
                 Thread.sleep(1000);
             }
         } catch (SocketTimeoutException e) {

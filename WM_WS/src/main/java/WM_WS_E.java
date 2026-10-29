@@ -3,103 +3,181 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.time.Duration;
+import java.util.List;
+import java.util.Locale;
+import java.util.Properties;
+import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 
-/*
-El Engine simula el funcionamiento de la estación controlando el riego,
-acumulando el volumen y detectando o resolviendo fugas. Responde al Monitor y permite
-cambiar el estado desde la consola mientras mantiene la conexión abierta.
-*/
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+
+
 public class WM_WS_E {
-    private String id;
+    private static final String SER = "org.apache.kafka.common.serialization.StringSerializer";
+    private static final String DES = "org.apache.kafka.common.serialization.StringDeserializer";
+
+    private volatile String id;
     private String estado = "DISPONIBLE";
     private boolean riego;
     private int caudal;
     private double volumen;
-    private boolean fuga;
+    private volatile boolean fuga;
+    private boolean bloqueada;
+    private String operario = "-";
+    private int segundosObjetivo;
+    private int segundosTranscurridos;
+
+    private final String broker;                 // null = sin Kafka (modo local)
+    private KafkaProducer<String, String> productor;
+    private boolean kafkaIniciado;
+    private volatile String operarioManual;      // operario de la última petición hecha desde la consola
+    private final Random azar = new Random();
     private final ConcurrentLinkedQueue<String> comandos = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> ordenes = new ConcurrentLinkedQueue<>();
 
-    public String getId() {
-        return id;
+    WM_WS_E(String broker) {
+        this.broker = broker;
     }
 
-    public String getEstado() {
-        return estado;
+    public String getId() { return id; }
+    public String getEstado() { return estado; }
+    public boolean estaRegando() { return riego; }
+    public int getCaudal() { return caudal; }
+    public double getVolumen() { return volumen; }
+    public boolean hayFuga() { return fuga; }
+
+    private static String formato(double v) {
+        return String.format(Locale.US, "%.1f", v);
     }
 
-    public boolean estaRegando() {
-        return riego;
+    // ---------- Estado de la estación ----------
+
+    private void recalcularEstado() {
+        if (riego) estado = "REGANDO";
+        else if (fuga) estado = "FUGA";
+        else if (bloqueada) estado = "FUERA_DE_SERVICIO";
+        else estado = "DISPONIBLE";
     }
 
-    public int getCaudal() {
-        return caudal;
-    }
-
-    public double getVolumen() {
-        return volumen;
-    }
-
-    public boolean hayFuga() {
-        return fuga;
-    }
-
-    public void setCaudal(int caudal) {
-        if (caudal >= 0) {
-            this.caudal = caudal;
+    private void iniciarRiego(String op, int segundos) {
+        if (riego || fuga || bloqueada) {
+            System.out.println("Orden START ignorada (riego en curso, fuga o estación bloqueada)");
+            return;
         }
+        riego = true;
+        operario = op;
+        segundosObjetivo = segundos;
+        segundosTranscurridos = 0;
+        volumen = 0;
+        caudal = 10 + azar.nextInt(6);            // entre 10 y 15 L/min
+        recalcularEstado();
+        System.out.println("Riego iniciado para " + op + " durante " + segundos + " s");
+        mostrarEstado();
     }
 
-    // Inicia un riego si no hay una fuga activa y reinicia el volumen acumulado.
-    public void regar() {
-        if (!fuga) {
-            riego = true;
-            estado = "REGANDO";
-            volumen = 0;
-        }
-    }
-
-    // Detiene el riego y deja la estación disponible, salvo que haya una fuga.
-    public void pararRiego() {
+    // Termina el riego en curso (por tiempo, parada o fuga) y se lo comunica a CENTRAL con un FIN.
+    private void terminarRiego(String motivo) {
+        if (!riego) return;
         riego = false;
-        if (fuga) {
-            estado = "FUGA";
-        } else {
-            estado = "DISPONIBLE";
-        }
+        publicar("ws-estado", id, id + "#FIN#" + formato(volumen) + "#" + segundosTranscurridos + "#" + operario);
+        System.out.println("Riego terminado (" + motivo + "): " + formato(volumen) + " L en " + segundosTranscurridos + " s");
+        caudal = 0;
+        operario = "-";
+        recalcularEstado();
+        mostrarEstado();
     }
 
-    // Simula una fuga: la estación queda averiada y el riego se detiene.
-    public void detectarFuga() {
+    private void detectarFuga() {
         fuga = true;
-        riego = false;
-        estado = "FUGA";
+        terminarRiego("fuga detectada");
+        recalcularEstado();
     }
 
-    // Marca la fuga como resuelta y devuelve la estación al estado disponible.
-    public void arreglarFuga() {
+    private void arreglarFuga() {
         fuga = false;
-        estado = "DISPONIBLE";
+        recalcularEstado();
     }
 
-    /*
-    Se ejecuta cuando el Monitor solicita el estado de salud. Si hay riego,
-    añade al volumen el caudal correspondiente a un segundo y responde KO
-    mientras exista una fuga.
-    */
+    // Respuesta al Monitor: KO mientras exista una fuga.
     private String comprobarSalud() {
-        if (riego) volumen += caudal / 60.0;
         return fuga ? "KO" : "OK";
     }
 
-    // Muestra por consola el estado de la estación y el volumen acumulado.
     private void mostrarEstado() {
-        System.out.printf("WS %s | %s | caudal: %d L/min | volumen: %.2f L%n", id == null ? "sin ID" : id, estado, caudal, volumen);
+        System.out.printf("WS %s | %s | caudal: %d L/min | volumen: %.2f L | operario: %s%n",
+                id == null ? "sin ID" : id, estado, caudal, volumen, operario);
     }
 
-    /*
-    Lee las órdenes del teclado en un hilo separado. La cola permite que el
-    hilo de red aplique los cambios al estado de la estación.
-    */
+    // ---------- Reloj: un turno por segundo ----------
+
+    private void iniciarReloj() {
+        ScheduledExecutorService reloj = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        });
+        reloj.scheduleAtFixedRate(this::tick, 1, 1, TimeUnit.SECONDS);
+    }
+
+    private void tick() {
+        try {
+            if (id == null) return;                       // aún no conoce su ID (el Monitor no ha conectado)
+            procesarComandos();
+            procesarOrdenes();
+            if (riego) {
+                segundosTranscurridos++;
+                volumen += caudal / 60.0;
+                publicar("ws-estado", id, id + "#RIEGO#" + caudal + "#" + formato(volumen) + "#" + operario);
+                mostrarEstado();
+                if (segundosTranscurridos >= segundosObjetivo) terminarRiego("tiempo cumplido");
+            }
+        } catch (Exception e) {
+            System.out.println("Error en el Engine: " + e.getMessage());
+        }
+    }
+
+    // ---------- Órdenes de CENTRAL (idWS#ACCION[#idFO#segundos]) ----------
+
+    private void procesarOrdenes() {
+        String orden;
+        while ((orden = ordenes.poll()) != null) {
+            String[] c = orden.split("#");
+            switch (c[1]) {
+                case "START" -> {
+                    int segundos = 30;
+                    try { if (c.length >= 4) segundos = Integer.parseInt(c[3]); }
+                    catch (NumberFormatException e) { /* se queda la duración por defecto */ }
+                    iniciarRiego(c.length >= 3 ? c[2] : "CENTRAL", segundos);
+                }
+                case "STOP" -> terminarRiego("orden de CENTRAL");
+                case "BLOCK" -> {
+                    bloqueada = true;
+                    terminarRiego("estación bloqueada");
+                    recalcularEstado();
+                    System.out.println("Estación fuera de servicio por orden de CENTRAL");
+                    mostrarEstado();
+                }
+                case "ACTIVATE" -> {
+                    bloqueada = false;
+                    recalcularEstado();
+                    System.out.println("Estación activada por CENTRAL");
+                    mostrarEstado();
+                }
+                default -> System.out.println("Orden desconocida: " + orden);
+            }
+        }
+    }
+
+    // ---------- Teclado ----------
+
     private void leerComandos() {
         Thread teclado = new Thread(() -> {
             try {
@@ -114,38 +192,116 @@ public class WM_WS_E {
         });
         teclado.setDaemon(true);
         teclado.start();
-        System.out.println("Comandos del Engine: R regar, P parar, KO fuga, OK recuperar, ESTADO");
+        System.out.println("Comandos del Engine: R [operario] [segundos] regar (lo autoriza CENTRAL), P parar, KO fuga, OK recuperar, ESTADO");
     }
 
-    /*
-    Vacía las órdenes pendientes y las aplica. R y P controlan el riego;
-    KO y OK simulan una fuga y su recuperación.
-    */
     private void procesarComandos() {
-        String comando;
-        while ((comando = comandos.poll()) != null) {
-            switch (comando) {
-                case "R" -> regar();
-                case "P" -> pararRiego();
+        String linea;
+        while ((linea = comandos.poll()) != null) {
+            String[] p = linea.split("\\s+");
+            switch (p[0]) {
+                case "R" -> solicitarRiego(p.length > 1 ? p[1] : "FO-01", p.length > 2 ? p[2] : null);
+                case "P" -> terminarRiego("parada manual");
                 case "KO", "K" -> detectarFuga();
                 case "OK", "O" -> arreglarFuga();
                 case "ESTADO" -> { }
-                default -> System.out.println("Comandos: R regar, P parar, KO fuga, OK recuperar, ESTADO");
+                default -> System.out.println("Comandos: R [operario] [segundos], P parar, KO fuga, OK recuperar, ESTADO");
             }
             mostrarEstado();
         }
     }
 
-    /*
-    Obtiene el host y el puerto del Monitor, inicia la lectura de órdenes y
-    mantiene la conexión. Si se pierde, el Engine vuelve a intentarlo.
-    */
+    // El riego manual pasa por CENTRAL como el de cualquier operario; el START llega después por ws-ordenes.
+    private void solicitarRiego(String op, String segundos) {
+        if (riego) { System.out.println("Ya hay un riego en curso"); return; }
+        if (fuga || bloqueada) { System.out.println("La estación no admite riegos (" + estado + ")"); return; }
+        if (productor == null) {
+            System.out.println("Sin conexión con CENTRAL (Kafka): no se puede solicitar el riego");
+            return;
+        }
+        operarioManual = op;
+        String extra = (segundos != null && segundos.matches("\\d+")) ? "#" + segundos : "";
+        publicar("fo-peticiones", op, op + "#" + id + extra);
+        System.out.println("Petición enviada a CENTRAL como " + op + ". Esperando autorización...");
+    }
+
+    // ---------- Kafka ----------
+
+    private void publicar(String topic, String clave, String valor) {
+        if (productor == null) return;
+        try {
+            productor.send(new ProducerRecord<>(topic, clave, valor));
+        } catch (Exception e) {
+            System.out.println("Imposible conectar con CENTRAL (Kafka): " + e.getMessage());
+        }
+    }
+
+    // Se llama una vez, cuando el Monitor le ha dado su ID.
+    private void iniciarKafka() {
+        if (broker == null || kafkaIniciado) return;
+        kafkaIniciado = true;
+
+        Properties pp = new Properties();
+        pp.put("bootstrap.servers", broker);
+        pp.put("key.serializer", SER);
+        pp.put("value.serializer", SER);
+        pp.put("max.block.ms", "3000");
+        productor = new KafkaProducer<>(pp);
+
+        // Grupo propio y único en cada arranque: recibe todas las órdenes nuevas y no repite las antiguas.
+        String grupo = "engine-" + id + "-" + System.currentTimeMillis();
+
+        Thread hiloOrdenes = new Thread(() -> escuchar("ws-ordenes", grupo, (clave, valor) -> {
+            String[] c = valor.split("#");
+            if (c.length >= 2 && c[0].equals(id)) ordenes.add(valor);
+        }));
+        hiloOrdenes.setDaemon(true);
+        hiloOrdenes.start();
+
+        // Para enseñar la respuesta de CENTRAL (OK / KO) a las peticiones hechas desde la consola.
+        Thread hiloRespuestas = new Thread(() -> escuchar("fo-respuestas", grupo + "-r", (clave, valor) -> {
+            String[] v = valor.split("#");
+            String op = operarioManual;
+            if (op != null && op.equals(clave) && v.length >= 2 && (v[1].equals("OK") || v[1].equals("KO"))) {
+                System.out.println("CENTRAL -> " + valor);
+            }
+        }));
+        hiloRespuestas.setDaemon(true);
+        hiloRespuestas.start();
+        System.out.println("Kafka: conectado a " + broker);
+    }
+
+    private void escuchar(String topic, String grupo, BiConsumer<String, String> accion) {
+        Properties pc = new Properties();
+        pc.put("bootstrap.servers", broker);
+        pc.put("group.id", grupo);
+        pc.put("key.deserializer", DES);
+        pc.put("value.deserializer", DES);
+        pc.put("auto.offset.reset", "latest");
+        pc.put("enable.auto.commit", "false");
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(pc)) {
+            consumer.subscribe(List.of(topic));
+            while (consumer.assignment().isEmpty()) consumer.poll(Duration.ofMillis(200));
+            for (var tp : consumer.assignment()) consumer.position(tp);   // fija el punto de lectura
+            while (true) {
+                for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofMillis(500))) {
+                    accion.accept(r.key(), r.value());
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Imposible conectar con CENTRAL (Kafka): " + e.getMessage());
+        }
+    }
+
+    // ---------- Conexión con el Monitor ----------
+
     public static void main(String[] args) {
         if (args.length == 0) {
             System.out.println("Uso: WM_WS_E [brokerHost:puerto] <hostMonitor> <puertoMonitor>");
             return;
         }
 
+        String broker = args.length >= 3 ? args[0] : null;
         String hostMonitor = args.length == 1 ? "localhost" : args[args.length - 2];
         int puertoMonitor;
         try {
@@ -154,9 +310,11 @@ public class WM_WS_E {
             System.out.println("El puerto del Monitor debe ser un número");
             return;
         }
+        if (broker == null) System.out.println("Sin broker de Kafka: el Engine funciona en modo local");
 
-        WM_WS_E engine = new WM_WS_E();
+        WM_WS_E engine = new WM_WS_E(broker);
         engine.leerComandos();
+        engine.iniciarReloj();
 
         while (true) {
             try (Socket socket = new Socket(hostMonitor, puertoMonitor);
@@ -172,12 +330,12 @@ public class WM_WS_E {
                 String[] campos = identificacion.split("#", 3);
                 engine.id = campos[1];
                 System.out.println("Conectado al Monitor: " + identificacion);
+                engine.iniciarKafka();
                 engine.mostrarEstado();
 
                 String mensaje;
                 while ((mensaje = in.readLine()) != null) {
                     if (mensaje.startsWith("SALUD#")) {
-                        engine.procesarComandos();
                         out.println(engine.comprobarSalud());
                     }
                 }
