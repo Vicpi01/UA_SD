@@ -11,18 +11,29 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
-
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.Executors;
+
+
 
 
 
@@ -37,6 +48,7 @@ public class WM_Central {
         initBD();
         cargarEstaciones();
         mostrarPanel();
+        iniciarWeb();
         crearTopics(broker);
         iniciarKafka(broker);
 
@@ -80,7 +92,7 @@ public class WM_Central {
                 if (est != null) {
                     if (est.estado.equals("REGANDO")) {
                         String fo = est.operario;
-                        System.out.println("Monitor caído durante un riego en " + idEstacion + ": se corta el riego");
+                        evento("Monitor caído durante un riego en " + idEstacion + ": se corta el riego");
                         enviarKafka("ws-ordenes", idEstacion, idEstacion + "#STOP");
                         enviarKafka("fo-respuestas", fo, fo + "#CAIDA#" + idEstacion);
                     }
@@ -102,6 +114,26 @@ public class WM_Central {
             st.execute("CREATE TABLE IF NOT EXISTS estaciones ("
                      + "id TEXT PRIMARY KEY, "
                      + "ubicacion TEXT NOT NULL)");
+
+            st.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY)");
+            st.execute("DELETE FROM operarios");
+            try (PreparedStatement ps = c.prepareStatement("INSERT OR IGNORE INTO operarios (id) VALUES (?)")) {
+                for (String op : System.getenv().getOrDefault("OPERARIOS",
+                        "FO-01,FO-02,FO-03,FO-04,FO-05,FO-06,FO-07,FO-08,FO-09,FO-10").split(",")) {
+                    ps.setString(1, op.trim());
+                    ps.executeUpdate();
+                }
+            }
+            
+            
+        
+            st.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY)");
+            try (PreparedStatement ps = c.prepareStatement("INSERT OR IGNORE INTO operarios (id) VALUES (?)")) {
+                for (String op : System.getenv().getOrDefault("OPERARIOS", "FO-01,FO-02,FO-03").split(",")) {
+                    ps.setString(1, op.trim());
+                    ps.executeUpdate();
+                }
+            }
         }
     }
 
@@ -241,13 +273,25 @@ public class WM_Central {
     }
 
 
-    static final int DURACION_RIEGO = 30;   // segundos, provisional
+    static final int DURACION_RIEGO = Integer.parseInt(System.getenv().getOrDefault("DURACION_RIEGO", "30"));
 
     static void atenderPeticion(String valor) {
-        System.out.println("Petición de riego: " + valor);
-        String[] c = valor.split("#");                       // idFO#idWS
-        if (c.length != 2) return;
+        evento("Petición de riego: " + valor);
+        String[] c = valor.split("#");                        // idFO#idWS   o   idFO#idWS#segundos
+        if (c.length < 2 || c.length > 3) return;
         String idFO = c[0];
+
+        if (!idFO.equals("CENTRAL") && !operarioExiste(idFO)) {
+            evento("Operario desconocido: " + idFO);
+            enviarKafka("fo-respuestas", idFO, idFO + "#KO#operario desconocido");
+            return;
+        }
+
+        int duracion = DURACION_RIEGO;
+        if (c.length == 3) {
+            try { duracion = Integer.parseInt(c[2].trim()); } catch (NumberFormatException ex) { /* se queda la duración por defecto */ }
+        }
+
         Estacion e = estaciones.get(c[1]);
         String respuesta;
         if (e == null) {
@@ -258,10 +302,10 @@ public class WM_Central {
             } else {
                 e.estado = "REGANDO"; e.operario = idFO; e.caudal = 0; e.volumen = 0;
                 respuesta = idFO + "#OK#" + e.id;
-                enviarKafka("ws-ordenes", e.id, e.id + "#START#" + idFO + "#" + DURACION_RIEGO);
+                enviarKafka("ws-ordenes", e.id, e.id + "#START#" + idFO + "#" + duracion);
             }
         }
-        System.out.println("Respuesta al FO: " + respuesta);
+        evento("Respuesta al FO: " + respuesta);
         enviarKafka("fo-respuestas", idFO, respuesta);
         mostrarPanel();
     }
@@ -300,7 +344,7 @@ public class WM_Central {
         if (e.estado.equals("REGANDO")) {
             enviarKafka("ws-ordenes", id, id + "#STOP");
             enviarKafka("fo-respuestas", e.operario, e.operario + "#FUGA#" + id);
-            System.out.println("Riego cortado por fuga en " + id);
+            evento("Riego cortado por fuga en " + id);
         }
         e.estado = "FUGA";
         e.caudal = 0; e.volumen = 0;
@@ -324,5 +368,160 @@ public class WM_Central {
     }
 
 
+    static boolean operarioExiste(String id) {
+        try (Connection c = DriverManager.getConnection(DB_URL);
+             PreparedStatement ps = c.prepareStatement("SELECT 1 FROM operarios WHERE id = ?")) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
+        } catch (SQLException e) {
+            System.out.println("Error BD: " + e.getMessage());
+            return false;
+        }
+    }
+
+
+
+
+    static final ConcurrentLinkedDeque<String> eventos = new ConcurrentLinkedDeque<>();
+
+    static void evento(String texto) {
+        String linea = java.time.LocalTime.now().withNano(0) + "  " + texto;
+        System.out.println(linea);
+        eventos.addFirst(linea);
+        while (eventos.size() > 30) eventos.removeLast();
+    }
+
+
+    static boolean aplicable(String accion, Estacion e) {
+        return switch (accion) {
+            case "START" -> e.estado.equals("DISPONIBLE");
+            case "STOP" -> e.estado.equals("REGANDO");
+            case "BLOCK" -> !e.estado.equals("DESCONECTADA") && !e.estado.equals("FUERA_DE_SERVICIO");
+            case "ACTIVATE" -> e.estado.equals("FUERA_DE_SERVICIO");
+            default -> false;
+        };
+    }
+
+    
+    static String ordenar(String accion, String ws, String segundos) {
+        List<Estacion> objetivo = new ArrayList<>();
+        if (ws.equals("ALL")) {
+            objetivo.addAll(estaciones.values());
+        } else {
+            Estacion e = estaciones.get(ws);
+            if (e == null) return "KO#estacion inexistente";
+            objetivo.add(e);
+        }
+        for (Estacion e : objetivo) {
+            if (ws.equals("ALL") && !aplicable(accion, e)) continue;
+            switch (accion) {
+                case "START" -> atenderPeticion("CENTRAL#" + e.id + (segundos.matches("\\d+") ? "#" + segundos : ""));
+                case "STOP" -> parar(e);
+                case "BLOCK" -> bloquear(e);
+                case "ACTIVATE" -> activar(e);
+                default -> { return "KO#accion desconocida"; }
+            }
+        }
+        return "OK";
+    }
+
+    static void bloquear(Estacion e) {
+        if (e.estado.equals("DESCONECTADA")) { evento("No se puede bloquear " + e.id + ": está desconectada"); return; }
+        if (e.estado.equals("REGANDO")) {
+            String fo = e.operario;
+            enviarKafka("ws-ordenes", e.id, e.id + "#STOP");
+            enviarKafka("fo-respuestas", fo, fo + "#BLOQUEADA#" + e.id);
+        }
+        e.estado = "FUERA_DE_SERVICIO";
+        e.caudal = 0; e.volumen = 0; e.operario = "-";
+        enviarKafka("ws-ordenes", e.id, e.id + "#BLOCK");
+        evento(e.id + " puesta Fuera de servicio por CENTRAL");
+        mostrarPanel();
+    }
+
+    static void activar(Estacion e) {
+        if (e.estado.equals("FUERA_DE_SERVICIO")) {
+            e.estado = "DISPONIBLE";
+            enviarKafka("ws-ordenes", e.id, e.id + "#ACTIVATE");
+            evento(e.id + " activada por CENTRAL");
+            mostrarPanel();
+        } else {
+            evento(e.id + ": no se puede activar (estado " + e.estado + ")");
+        }
+    }
+
+
+
+    static void iniciarWeb() throws IOException {
+        int puerto = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+        HttpServer http = HttpServer.create(new InetSocketAddress(puerto), 0);
+        http.createContext("/", ex -> responder(ex, 200, "text/html; charset=utf-8", leerRecurso("/panel.html")));
+        http.createContext("/api/estado", ex ->
+                responder(ex, 200, "application/json; charset=utf-8", json().getBytes(StandardCharsets.UTF_8)));
+        http.createContext("/api/orden", ex -> {
+            if (!ex.getRequestMethod().equals("POST")) { responder(ex, 405, "text/plain", "POST".getBytes()); return; }
+            Map<String, String> q = consulta(ex.getRequestURI().getRawQuery());
+            String r = ordenar(q.getOrDefault("accion", ""), q.getOrDefault("ws", ""), q.getOrDefault("segundos", ""));
+            responder(ex, r.equals("OK") ? 200 : 400, "text/plain; charset=utf-8", r.getBytes(StandardCharsets.UTF_8));
+        });
+        http.setExecutor(Executors.newCachedThreadPool());
+        http.start();
+        System.out.println("Panel web en el puerto " + puerto);
+    }
+
+    static void responder(HttpExchange ex, int codigo, String tipo, byte[] cuerpo) throws IOException {
+        ex.getResponseHeaders().set("Content-Type", tipo);
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
+        ex.sendResponseHeaders(codigo, cuerpo.length);
+        try (OutputStream os = ex.getResponseBody()) { os.write(cuerpo); }
+    }
+    
+    static byte[] leerRecurso(String ruta) throws IOException {
+        try (InputStream in = WM_Central.class.getResourceAsStream(ruta)) {
+            return in == null ? "Falta panel.html".getBytes(StandardCharsets.UTF_8) : in.readAllBytes();
+        }
+    }
+    
+    static Map<String, String> consulta(String q) {
+        Map<String, String> m = new HashMap<>();
+        if (q == null) return m;
+        for (String par : q.split("&")) {
+            String[] kv = par.split("=", 2);
+            if (kv.length == 2) m.put(kv[0], java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8));
+        }
+        return m;
+    }
+
+    static void parar(Estacion e) {
+        if (!e.estado.equals("REGANDO")) { evento("No hay ningún riego que parar en " + e.id); return; }
+        enviarKafka("ws-ordenes", e.id, e.id + "#STOP");
+        evento("Riego de " + e.id + " detenido por CENTRAL");
+        e.estado = "DISPONIBLE"; e.caudal = 0; e.volumen = 0; e.operario = "-";
+        mostrarPanel();
+    }
+    
+    static String esc(String s) { return s.replace("\\", "\\\\").replace("\"", "\\\""); }
+    
+    static String json() {
+        StringBuilder sb = new StringBuilder("{\"estaciones\":[");
+        boolean primero = true;
+        for (Estacion e : new TreeMap<>(estaciones).values()) {
+            if (!primero) sb.append(',');
+            primero = false;
+            sb.append("{\"id\":\"").append(esc(e.id)).append("\",\"ubicacion\":\"").append(esc(e.ubicacion))
+              .append("\",\"estado\":\"").append(e.estado)
+              .append("\",\"caudal\":").append(String.format(Locale.US, "%.1f", e.caudal))
+              .append(",\"volumen\":").append(String.format(Locale.US, "%.1f", e.volumen))
+              .append(",\"operario\":\"").append(esc(e.operario)).append("\"}");
+        }
+        sb.append("],\"eventos\":[");
+        primero = true;
+        for (String ev : eventos) {
+            if (!primero) sb.append(',');
+            primero = false;
+            sb.append('"').append(esc(ev)).append('"');
+        }
+        return sb.append("]}").toString();
+    }
 
     }
