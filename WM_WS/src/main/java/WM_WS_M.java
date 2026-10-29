@@ -103,24 +103,11 @@ public class WM_WS_M {
         }
     }
 
-
-    private void mantenerCentralSeguro() throws InterruptedException {
-        try {
-            mantenerCentral();
-        } catch (IOException e) {
-            System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
-            cerrarCentral();
-            while (!conectarCentral()) Thread.sleep(5000);
-        }
-    }
-
-
-
     /*
     Envuelve mantenerCentral() gestionando la reconexión automática si CENTRAL
     se cae o se reinicia, permitiendo llamarlo tanto esperando al Engine como dentro del bucle de salud.
     */
-    private void sincronizarCentral() throws InterruptedException {
+    private void mantenerCentralSeguro() throws InterruptedException {
         try {
             mantenerCentral();
         } catch (IOException e) {
@@ -183,20 +170,20 @@ public class WM_WS_M {
                 if (averiaAnterior != enAveria) {
                     System.out.println(enAveria ? "Avería/Fuga detectada en WS (" + respuesta + ")" : "Avería/Fuga resuelta en WS");
                 }
-                sincronizarCentral();
+                mantenerCentralSeguro();
                 Thread.sleep(1000);
             }
         } catch (SocketTimeoutException e) {
             if (identificado) {
                 enAveria = true;
                 System.out.println("El Engine no responde (Timeout): reportando avería a CENTRAL");
-                sincronizarCentral();
+                mantenerCentralSeguro();
             }
         } catch (IOException e) {
             if (identificado) {
                 enAveria = true;
                 System.out.println("Conexión con Engine perdida (" + e.getMessage() + "): reportando avería a CENTRAL");
-                sincronizarCentral();
+                mantenerCentralSeguro();
             }
         }
     }
@@ -211,7 +198,7 @@ public class WM_WS_M {
             servidor.setSoTimeout(1000);
             System.out.println("Esperando al Engine en el puerto " + puertoMonitor);
             while (true) {
-                sincronizarCentral();
+                mantenerCentralSeguro();
                 try {
                     atenderEngine(servidor.accept());
                 } catch (SocketTimeoutException ignored) {
