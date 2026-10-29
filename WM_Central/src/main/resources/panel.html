@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><title>WaterManagement · CENTRAL</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#f3f5f7;color:#1c2b36}
+header{background:#12354a;color:#fff;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+main{padding:20px 24px;max-width:1150px;margin:auto}
+.acciones{margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap}
+button{border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font-weight:600;background:#12354a;color:#fff}
+button.verde{background:#2e9e4f}button.naranja{background:#e07b00}button.rojo{background:#c0392b}
+button:disabled{opacity:.3;cursor:not-allowed}
+table{width:100%;border-collapse:collapse;background:#fff;box-shadow:0 1px 4px #0002}
+th,td{padding:10px 12px;text-align:left}th{background:#e8edf1}
+.DISPONIBLE{background:#8fd19e}
+.REGANDO{background:#8fd19e;animation:parpadeo 1s infinite}
+.FUGA{background:#e5484d;color:#fff}
+.FUERA_DE_SERVICIO{background:#f5a524}
+.DESCONECTADA{background:#c9cfd4}
+@keyframes parpadeo{50%{background:#2e9e4f;color:#fff}}
+.leyenda{display:flex;gap:16px;margin:0 0 12px;font-size:14px;flex-wrap:wrap}
+.leyenda span::before{content:'';display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+#eventos{background:#101820;color:#b6f2c4;font-family:monospace;padding:12px;margin-top:16px;border-radius:6px;min-height:120px;white-space:pre-wrap;font-size:13px}
+</style></head><body>
+<header><h2 style="margin:0">WaterManagement · CENTRAL</h2><span id="resumen"></span></header>
+<main>
+<div class="acciones">
+  <button class="verde" onclick="regar('ALL')">Regar todas</button>
+  <button class="rojo" onclick="orden('STOP','ALL')">Parar todas</button>
+  <button class="naranja" onclick="orden('BLOCK','ALL')">Bloquear todas</button>
+  <button onclick="orden('ACTIVATE','ALL')">Activar todas</button>
+</div>
+<div class="leyenda">
+  <span style="--c:#8fd19e">Disponible / Regando (parpadea)</span>
+  <span style="--c:#e5484d">Fuga</span>
+  <span style="--c:#f5a524">Fuera de servicio</span>
+  <span style="--c:#c9cfd4">Desconectada</span>
+</div>
+<table><thead><tr><th>ID</th><th>Ubicación</th><th>Estado</th><th>Caudal</th><th>Volumen</th><th>Operario</th><th>Acciones</th></tr></thead>
+<tbody id="filas"></tbody></table>
+<div id="eventos"></div>
+</main>
+<script>
+const NOMBRES={DISPONIBLE:'Disponible',REGANDO:'Regando',FUGA:'Fuga',FUERA_DE_SERVICIO:'Fuera de servicio',DESCONECTADA:'Desconectada'};
+
+function regar(ws){
+  const s=prompt('Duración del riego en segundos','30');
+  if(s===null) return;
+  orden('START',ws,s);
+}
+async function orden(accion,ws,seg){
+  const r=await fetch('/api/orden?accion='+accion+'&ws='+encodeURIComponent(ws)+(seg?'&segundos='+encodeURIComponent(seg):''),{method:'POST'});
+  if(!r.ok) alert(await r.text());
+  refrescar();
+}
+async function refrescar(){
+  try{
+    const d=await (await fetch('/api/estado')).json();
+    document.getElementById('filas').innerHTML=d.estaciones.map(e=>{
+      const regando=e.estado==='REGANDO';
+      const bloqueable=e.estado!=='DESCONECTADA'&&e.estado!=='FUERA_DE_SERVICIO';
+      return `<tr><td>${e.id}</td><td>${e.ubicacion}</td>
+        <td class="${e.estado}">${NOMBRES[e.estado]||e.estado}</td>
+        <td>${regando?e.caudal+' L/min':'—'}</td><td>${regando?e.volumen+' L':'—'}</td><td>${regando?e.operario:'—'}</td>
+        <td><button class="verde" ${e.estado==='DISPONIBLE'?'':'disabled'} onclick="regar('${e.id}')">Regar</button>
+        <button class="rojo" ${regando?'':'disabled'} onclick="orden('STOP','${e.id}')">Parar</button>
+        <button class="naranja" ${bloqueable?'':'disabled'} onclick="orden('BLOCK','${e.id}')">Bloquear</button>
+        <button ${e.estado==='FUERA_DE_SERVICIO'?'':'disabled'} onclick="orden('ACTIVATE','${e.id}')">Activar</button></td></tr>`;
+    }).join('');
+    document.getElementById('eventos').textContent=d.eventos.join('\n');
+    const n=k=>d.estaciones.filter(e=>e.estado===k).length;
+    document.getElementById('resumen').textContent=
+      `Disponibles ${n('DISPONIBLE')} · Regando ${n('REGANDO')} · Fuga ${n('FUGA')} · Fuera de servicio ${n('FUERA_DE_SERVICIO')} · Desconectadas ${n('DESCONECTADA')}`;
+  }catch(err){document.getElementById('resumen').textContent='Sin conexión con CENTRAL';}
+}
+refrescar();setInterval(refrescar,1000);
+</script></body></html>
