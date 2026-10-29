@@ -103,6 +103,19 @@ public class WM_WS_M {
         }
     }
 
+
+    private void mantenerCentralSeguro() throws InterruptedException {
+        try {
+            mantenerCentral();
+        } catch (IOException e) {
+            System.out.println("Conexión con CENTRAL perdida: " + e.getMessage());
+            cerrarCentral();
+            while (!conectarCentral()) Thread.sleep(5000);
+        }
+    }
+
+
+
     /*
     Envuelve mantenerCentral() gestionando la reconexión automática si CENTRAL
     se cae o se reinicia, permitiendo llamarlo tanto esperando al Engine como dentro del bucle de salud.

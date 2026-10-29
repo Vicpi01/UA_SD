@@ -32,7 +32,8 @@ import java.util.Locale;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executors;
-
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 
 
@@ -117,6 +118,10 @@ public class WM_Central {
 
             st.execute("CREATE TABLE IF NOT EXISTS operarios (id TEXT PRIMARY KEY)");
             st.execute("DELETE FROM operarios");
+            st.execute("CREATE TABLE IF NOT EXISTS riegos (id INTEGER PRIMARY KEY AUTOINCREMENT, estacion TEXT, operario TEXT, "
+                + "inicio TEXT, fin TEXT, duracion_prevista INTEGER, duracion INTEGER, volumen REAL, estado TEXT)");
+                st.execute("UPDATE riegos SET estado = 'INTERRUMPIDO', fin = datetime('now') WHERE estado = 'EN_CURSO'");
+
             try (PreparedStatement ps = c.prepareStatement("INSERT OR IGNORE INTO operarios (id) VALUES (?)")) {
                 for (String op : System.getenv().getOrDefault("OPERARIOS",
                         "FO-01,FO-02,FO-03,FO-04,FO-05,FO-06,FO-07,FO-08,FO-09,FO-10").split(",")) {
@@ -255,6 +260,9 @@ public class WM_Central {
 
         new Thread(() -> escuchar(broker, "central", "fo-peticiones", WM_Central::atenderPeticion)).start();
         new Thread(() -> escuchar(broker, "central-estado", "ws-estado", WM_Central::procesarEstado)).start();
+        ScheduledExecutorService reloj = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r); t.setDaemon(true); return t; });
+        reloj.scheduleAtFixedRate(() -> enviarKafka("ws-lista", "estado", listaTexto()), 2, 5, TimeUnit.SECONDS);
     }
 
     static void escuchar(String broker, String grupo, String topic, java.util.function.Consumer<String> accion) {
@@ -303,6 +311,8 @@ public class WM_Central {
                 e.estado = "REGANDO"; e.operario = idFO; e.caudal = 0; e.volumen = 0;
                 respuesta = idFO + "#OK#" + e.id;
                 enviarKafka("ws-ordenes", e.id, e.id + "#START#" + idFO + "#" + duracion);
+                registrarFinRiego(e.id, Double.parseDouble(c[2]), Integer.parseInt(c[3]));
+                evento("Riego finalizado en " + e.id + ": " + c[2] + " L en " + c[3] + " s (" + c[4] + ")");
             }
         }
         evento("Respuesta al FO: " + respuesta);
@@ -329,6 +339,8 @@ public class WM_Central {
         } else if (c[1].equals("FIN") && c.length == 5) {       // idWS#FIN#volumen#duracion#idFO
             if (e.estado.equals("REGANDO")) e.estado = "DISPONIBLE";
             e.caudal = 0; e.volumen = 0; e.operario = "-";
+            registrarFinRiego(e.id, Double.parseDouble(c[2]), Integer.parseInt(c[3]));
+            evento("Riego finalizado en " + e.id + ": " + c[2] + " L en " + c[3] + " s (" + c[4] + ")");
             enviarKafka("fo-respuestas", c[4], c[4] + "#FIN#" + e.id + "#" + c[2] + "#" + c[3]);
         } else {
             System.out.println("Ignorado: mensaje no reconocido");
@@ -362,6 +374,7 @@ public class WM_Central {
                     new NewTopic("fo-respuestas", 1, (short) 1),
                     new NewTopic("ws-ordenes", 1, (short) 1),
                     new NewTopic("ws-estado", 1, (short) 1))).all().get();
+                    new NewTopic("ws-lista", 1, (short) 1);
         } catch (Exception e) {
             System.out.println("Topics: " + e.getMessage());   // si ya existen, no pasa nada
         }
@@ -523,5 +536,33 @@ public class WM_Central {
         }
         return sb.append("]}").toString();
     }
+
+    static void registrarInicioRiego(String ws, String operario, int prevista) {
+        String sql = "INSERT INTO riegos (estacion, operario, inicio, duracion_prevista, estado) "
+                   + "VALUES (?, ?, datetime('now'), ?, 'EN_CURSO')";
+        try (Connection c = DriverManager.getConnection(DB_URL); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, ws); ps.setString(2, operario); ps.setInt(3, prevista);
+            ps.executeUpdate();
+        } catch (SQLException ex) { System.out.println("Error BD: " + ex.getMessage()); }
+    }
+
+    static void registrarFinRiego(String ws, double volumen, int duracion) {
+        String sql = "UPDATE riegos SET fin = datetime('now'), volumen = ?, duracion = ?, estado = 'FINALIZADO' "
+                   + "WHERE id = (SELECT id FROM riegos WHERE estacion = ? AND estado = 'EN_CURSO' ORDER BY id DESC LIMIT 1)";
+        try (Connection c = DriverManager.getConnection(DB_URL); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setDouble(1, volumen); ps.setInt(2, duracion); ps.setString(3, ws);
+            ps.executeUpdate();
+        } catch (SQLException ex) { System.out.println("Error BD: " + ex.getMessage()); }
+    }
+
+    static String listaTexto() {
+        StringBuilder sb = new StringBuilder();
+        for (Estacion e : new TreeMap<>(estaciones).values()) {
+            if (sb.length() > 0) sb.append(';');
+            sb.append(e.id).append(',').append(e.ubicacion).append(',').append(e.estado);
+        }
+        return sb.toString();
+    }
+
 
     }
