@@ -311,8 +311,7 @@ public class WM_Central {
                 e.estado = "REGANDO"; e.operario = idFO; e.caudal = 0; e.volumen = 0;
                 respuesta = idFO + "#OK#" + e.id;
                 enviarKafka("ws-ordenes", e.id, e.id + "#START#" + idFO + "#" + duracion);
-                registrarFinRiego(e.id, Double.parseDouble(c[2]), Integer.parseInt(c[3]));
-                evento("Riego finalizado en " + e.id + ": " + c[2] + " L en " + c[3] + " s (" + c[4] + ")");
+                registrarInicioRiego(e.id, idFO, duracion);
             }
         }
         evento("Respuesta al FO: " + respuesta);
@@ -373,8 +372,8 @@ public class WM_Central {
                     new NewTopic("fo-peticiones", 1, (short) 1),
                     new NewTopic("fo-respuestas", 1, (short) 1),
                     new NewTopic("ws-ordenes", 1, (short) 1),
-                    new NewTopic("ws-estado", 1, (short) 1))).all().get();
-                    new NewTopic("ws-lista", 1, (short) 1);
+                    new NewTopic("ws-estado", 1, (short) 1),
+                    new NewTopic("ws-lista", 1, (short) 1))).all().get();
         } catch (Exception e) {
             System.out.println("Topics: " + e.getMessage());   // si ya existen, no pasa nada
         }
