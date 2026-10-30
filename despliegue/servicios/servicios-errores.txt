@@ -1,0 +1,4 @@
+# Fichero con errores a proposito: debe mostrar denegaciones y seguir con el siguiente servicio.
+WS-99#10
+WS-01#abc
+WS-01#8

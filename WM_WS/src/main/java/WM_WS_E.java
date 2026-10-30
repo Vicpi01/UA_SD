@@ -1,5 +1,7 @@
 import java.io.*;
 import java.net.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 import java.time.Duration;
@@ -22,6 +24,7 @@ public class WM_WS_E {
     private double volumen;
     private volatile boolean fuga;
     private boolean bloqueada;
+    private volatile boolean sinMonitor = true; // true mientras no haya conexión con el Monitor: la estación está AVERIADA
     private String operario = "-";
     private int segundosObjetivo;
     private int segundosTranscurridos;
@@ -51,14 +54,58 @@ public class WM_WS_E {
 
     private void recalcularEstado() {
         if (riego) estado = "REGANDO";
+        else if (sinMonitor) estado = "AVERIADA";
         else if (fuga) estado = "FUGA";
         else if (bloqueada) estado = "FUERA_DE_SERVICIO";
         else estado = "DISPONIBLE";
     }
 
+    // ---------- Persistencia del riego en curso ----------
+    // Cada segundo de riego se guarda en disco. Si el Engine se cae (crash) en mitad de un riego, al volver
+    // a arrancar encuentra el fichero y envía a CENTRAL el estado final de lo que ya se había regado.
+    // El directorio se puede cambiar con la variable de entorno WS_STATE_DIR (por defecto /data).
+
+    private Path ficheroRiego() {
+        return Path.of(System.getenv().getOrDefault("WS_STATE_DIR", "/data"), "riego-" + id + ".txt");
+    }
+
+    private void guardarRiego() {
+        try {
+            Path f = ficheroRiego();
+            Files.createDirectories(f.getParent());
+            Files.writeString(f, operario + "#" + segundosTranscurridos + "#" + formato(volumen) + "\n");
+        } catch (Exception e) {
+            // sin disco no se puede guardar, pero el riego sigue funcionando
+        }
+    }
+
+    private void borrarRiego() {
+        try {
+            Files.deleteIfExists(ficheroRiego());
+        } catch (Exception e) {
+            // nada que hacer
+        }
+    }
+
+    private void recuperarRiegoPendiente() {
+        try {
+            Path f = ficheroRiego();
+            if (!Files.exists(f)) return;
+            String[] c = Files.readString(f).trim().split("#");   // operario # segundos # volumen
+            if (c.length >= 3) {
+                publicar("ws-estado", id, id + "#FIN#" + c[2] + "#" + c[1] + "#" + c[0]);
+                System.out.println("Riego interrumpido por una caída recuperado: " + c[2] + " L en " + c[1]
+                        + " s (operario " + c[0] + "). Estado final enviado a CENTRAL.");
+            }
+            Files.deleteIfExists(f);
+        } catch (Exception e) {
+            System.out.println("No se pudo recuperar el riego pendiente: " + e.getMessage());
+        }
+    }
+
     private void iniciarRiego(String op, int segundos) {
-        if (riego || fuga || bloqueada) {
-            System.out.println("Orden START ignorada (riego en curso, fuga o estación bloqueada)");
+        if (riego || fuga || bloqueada || sinMonitor) {
+            System.out.println("Orden START ignorada (riego en curso, fuga, estación bloqueada o averiada)");
             return;
         }
         riego = true;
@@ -69,6 +116,7 @@ public class WM_WS_E {
         caudal = 10 + azar.nextInt(6); // entre 10 y 15 L/min
         recalcularEstado();
         System.out.println("Riego iniciado para " + op + " durante " + segundos + " s");
+        guardarRiego();
         mostrarEstado();
     }
 
@@ -77,6 +125,7 @@ public class WM_WS_E {
         if (!riego) return;
         riego = false;
         publicar("ws-estado", id, id + "#FIN#" + formato(volumen) + "#" + segundosTranscurridos + "#" + operario);
+        borrarRiego();
         System.out.println("Riego terminado (" + motivo + "): " + formato(volumen) + " L en " + segundosTranscurridos + " s");
         caudal = 0;
         operario = "-";
@@ -118,12 +167,16 @@ public class WM_WS_E {
             if (id == null) {
                 return; // aún no conoce su ID (el Monitor no ha conectado)
             }
+            String anterior = estado;
+            recalcularEstado();
+            if (!riego && !anterior.equals(estado)) mostrarEstado();   // p. ej. pasa a AVERIADA al caerse el Monitor
             procesarComandos();
             procesarOrdenes();
             if (riego) {
                 segundosTranscurridos++;
                 volumen += caudal / 60.0;
                 publicar("ws-estado", id, id + "#RIEGO#" + caudal + "#" + formato(volumen) + "#" + operario);
+                guardarRiego();
                 mostrarEstado();
                 if (segundosTranscurridos >= segundosObjetivo) terminarRiego("tiempo cumplido");
             }
@@ -197,6 +250,7 @@ public class WM_WS_E {
 
     // El riego manual pasa por CENTRAL como el de cualquier operario; el START llega después por ws-ordenes.
     private void solicitarRiego(String op, String segundos) {
+        if (sinMonitor) { System.out.println("ESTACIÓN AVERIADA: sin conexión con el Monitor. No se admiten riegos, ni manuales."); return; }
         if (riego) { System.out.println("Ya hay un riego en curso"); return; }
         if (fuga || bloqueada) { System.out.println("La estación no admite riegos (" + estado + ")"); return; }
         if (productor == null) {
@@ -296,6 +350,7 @@ public class WM_WS_E {
         engine.leerComandos();
         engine.iniciarReloj();
 
+        int fallos = 0;   // intentos seguidos sin poder conectar con el Monitor
         while (true) {
             try (Socket socket = new Socket(hostMonitor, puertoMonitor);
                  BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
@@ -309,8 +364,12 @@ public class WM_WS_E {
                 }
                 String[] campos = identificacion.split("#", 3);
                 engine.id = campos[1];
+                engine.sinMonitor = false;
+                fallos = 0;
                 System.out.println("Conectado al Monitor: " + identificacion);
                 engine.iniciarKafka();
+                engine.recuperarRiegoPendiente();
+                engine.recalcularEstado();
                 engine.mostrarEstado();
 
                 String mensaje;
@@ -319,8 +378,15 @@ public class WM_WS_E {
                         out.println(engine.comprobarSalud());
                     }
                 }
+                engine.sinMonitor = true;
+                System.out.println("ESTACIÓN AVERIADA: el Monitor ha cerrado la conexión");
             } catch (IOException e) {
-                System.out.println("No se pudo conectar con el Monitor: " + e.getMessage());
+                engine.sinMonitor = true;
+                fallos++;
+                // Se avisa al caer y luego cada 15 intentos, para no tapar las líneas del riego en curso.
+                if (fallos == 1 || fallos % 15 == 0) {
+                    System.out.println("ESTACIÓN AVERIADA: no se pudo conectar con el Monitor (" + e.getMessage() + "). Se sigue intentando...");
+                }
             }
 
             try {

@@ -96,7 +96,7 @@ public class WM_FO {
                 else if (f.length >= 3 && (f[1].equals("FUGA") || f[1].equals("CAIDA") || f[1].equals("BLOQUEADA")))
                     texto = "Riego interrumpido en " + f[2] + ": " + motivo(f[1]);
                 if (texto != null) {
-                    if (!alguno) System.out.println("Mientras estabas desconectado:");
+                    if (!alguno) System.out.println("Avisos pendientes de servicios anteriores:");
                     alguno = true;
                     System.out.println("  " + texto);
                 }
@@ -116,8 +116,8 @@ public class WM_FO {
 
     // ---------- Un servicio completo: petición, autorización, riego y resumen ----------
 
-    private static void solicitar(String operario, String ws, long segundos,
-                                  KafkaProducer<String, String> productor, KafkaConsumer<String, String> consumidor) {
+    private static void solicitar(String operario, String ws, long segundos, KafkaProducer<String, String> productor, KafkaConsumer<String, String> consumidor) {
+        mostrarPendientes(operario, consumidor);   // avisos que llegaron mientras no esperabas nada (p. ej. un FIN tardío)
         String valor = operario + "#" + ws + (segundos > 0 ? "#" + segundos : "");
         try {
             productor.send(new ProducerRecord<>(PETICIONES, operario, valor)).get(8, TimeUnit.SECONDS);

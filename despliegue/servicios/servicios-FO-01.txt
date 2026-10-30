@@ -1,0 +1,4 @@
+# Operario FO-01. Formato: idWS#duracionSegundos  (0 = duracion por defecto de CENTRAL)
+WS-01#15
+WS-02#15
+WS-01#10

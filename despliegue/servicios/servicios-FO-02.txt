@@ -1,0 +1,4 @@
+# Operario FO-02. Pide la misma estacion que FO-01 para provocar denegaciones por "no disponible".
+WS-02#12
+WS-01#10
+WS-03#10
