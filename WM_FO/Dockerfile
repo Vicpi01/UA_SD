@@ -1,9 +1,10 @@
 FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /src
-COPY . .
-RUN mvn -q -pl WM_FO -am -DskipTests package
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN mvn -DskipTests package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-COPY --from=build /src/WM_FO/target/wm-fo.jar /app/wm-fo.jar
-ENTRYPOINT ["java", "-jar", "/app/wm-fo.jar"]
+COPY --from=build /app/target/wm-fo.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
