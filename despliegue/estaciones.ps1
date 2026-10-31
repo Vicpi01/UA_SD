@@ -4,6 +4,7 @@
 #   .\estaciones.ps1                          -> WS-01 (Monitor + Engine)
 #   .\estaciones.ps1 -Cantidad 3              -> WS-01, WS-02 y WS-03
 #   .\estaciones.ps1 -Desde 4                 -> solo WS-04 (estacion nueva en caliente)
+#   .\estaciones.ps1 -Desde 4 -Ubicacion "Plaza Mayor"   -> WS-04 con la ubicacion que pida el profesor
 #   .\estaciones.ps1 -Desde 1 -Solo Monitor   -> relanza solo el Monitor de WS-01 (tras matarlo)
 #   .\estaciones.ps1 -Desde 1 -Solo Engine    -> relanza solo el Engine de WS-01 (tras matarlo)
 #
@@ -14,7 +15,8 @@ param(
     [int]$Desde = 1,
     [int]$Cantidad = 1,
     [ValidateSet("Ambos", "Monitor", "Engine")][string]$Solo = "Ambos",
-    [string]$HostMonitor = ""          # vacio = mismo PC (se usa el nombre monN de la red Docker)
+    [string]$HostMonitor = "",         # vacio = mismo PC (se usa el nombre monN de la red Docker)
+    [string]$Ubicacion = ""            # vacio = la de config.ps1; si se indica, se usa para la(s) estacion(es) lanzadas
 )
 . "$PSScriptRoot\config.ps1"
 
@@ -34,7 +36,7 @@ for ($i = $Desde; $i -lt ($Desde + $Cantidad); $i++) {
     $puerto = 7000 + $i
     $mon    = "mon$i"
     $eng    = "eng$i"
-    $ubi    = $UBICACIONES[($i - 1) % $UBICACIONES.Count]
+    if ($Ubicacion -ne "") { $ubi = $Ubicacion } else { $ubi = $UBICACIONES[($i - 1) % $UBICACIONES.Count] }
 
     if ($Solo -ne "Engine") {
         # -p publica el puerto del Monitor hacia fuera del PC (necesario solo en modo repartido, no molesta en modo normal)
