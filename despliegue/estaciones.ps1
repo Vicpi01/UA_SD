@@ -46,13 +46,13 @@ for ($i = $Desde; $i -lt ($Desde + $Cantidad); $i++) {
     if ($Solo -ne "Monitor") {
         if ($HostMonitor -eq "") {
             $destino = $mon
-            $red = "--network $RED"
+            $opcionRed = "--network $RED"
         } else {
             $destino = $HostMonitor
-            $red = ""
+            $opcionRed = ""
         }
         # -v wm-engN:/data = volumen donde el Engine guarda el riego en curso; sobrevive a un crash (docker kill / cerrar ventana)
-        $cmd = "`$host.UI.RawUI.WindowTitle = 'ENGINE $id'; docker run --rm -it --name $eng $red -v wm-${eng}:/data $IMG_WS WM_WS_E $KAFKA_BROKER $destino $puerto"
+        $cmd = "`$host.UI.RawUI.WindowTitle = 'ENGINE $id'; docker run --rm -it --name $eng $opcionRed -v wm-${eng}:/data $IMG_WS WM_WS_E $KAFKA_BROKER $destino $puerto"
         Start-Process powershell -ArgumentList '-NoExit', '-Command', $cmd
         Write-Host "Engine de $id lanzado ($eng -> ${destino}:${puerto})" -ForegroundColor Green
         Start-Sleep -Seconds 2
