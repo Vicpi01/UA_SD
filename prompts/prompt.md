@@ -37,3 +37,51 @@ Lo que puedo explicar de lo que se hizo con apoyo de la IA
 
 Los pom.xml añaden las dependencias de Kafka y el plugin shade, que mete todo en un único jar ejecutable. Los Dockerfile usan dos etapas, una que compila con Maven y otra que solo ejecuta con el JRE. El FO usa un productor y un consumidor de Kafka con un grupo fijo por operario, y por eso al volver tras una caída recibe lo que se perdió; además lee ws-lista para enseñar las estaciones. En el Engine, una variable pasa a verdadero cuando falla la conexión con el Monitor y el estado cambia a averiada; el riego se guarda cada segundo en un volumen de Docker y, al reconectar, el Engine lee ese fichero, publica el resumen final en ws-estado y lo borra. Los scripts de PowerShell solo automatizan los comandos docker run de cada módulo con sus argumentos y no contienen lógica de la práctica.
 
+Víctor Ramos:
+
+En mi caso, he utilizado ChatGPT como herramienta de apoyo en todo el desarrollo de la práctica. Como mi parte del proyecto ha sido la Water Station, con su Monitor y Engine, y el Field Operator, voy a detallar el uso de la IA separado por las partes que he realizado.
+
+Pero antes de ello, al principio pedí ayuda para entender por dónde empezar con una práctica de este tamaño. Como no estoy acostumbrado a realizar proyectos tan grandes y desde cero, y, aunque conocía de forma general los sockets y Kafka, no tenía claro como convertir el enunciado en programas independientes y como repartir las responsabiliaddes ni cómo organizar el desarrollo.
+
+La IA me ayudó a separar el sistema de en sus principales componentes y a enteder el papel que desempeña cada uno. Es por eso, que pedí una hoja de ruta del proyecto para saber cómo abordarlo.
+
+También me gustaría destacar que los comentarios que tenía me los modificó Codex porque quiso y no los he cambiado, se han quedado tal y como me los corrigió.
+
+Water Station Monitor:
+
+Una parte fundamental del uso de la IA, fue la de entender el uso de hilos. Partimos del código de la primera práctica, la que era para entender el código y sobre ella empecé a trabajar. El problema principal que encontré es que no sabía como poder realizar ambas comprobaciones de manera simultánea, la del Monitor con el Engine y la del Monitor con la Central, para ello se usan hilos, como bien se explicó en clase, pero no tenía ni idea de definirlos e implementarlos, aunque la idea la tenía. Por eso le pedí que los implementase y los explicara para saber cómo se trabaja con ellos. Con esto, conseguí ejecutar dos hilos a la vez para comprobar de manera simultánea las conexiones entre los módulos antes mencionados.
+
+Otro uso muy importante de la IA fueron la corrección de errores, momentos en los que no sabía qué fallaba exactamente porque, en cuanto a lógica estaba bien pero se me olvidaba añadir alguna comprobación y ese tipo de cosas.
+
+Water Station Engine:
+
+El caso del Engine es más o menos el mismo que del Monitor, corrección de errores; sin embargo, como el uso de Kafka es algo con lo que no estaba muy familiarizado, por no decir nada, le pedí mucha ayuda. En primer lugar, le pedí los argumentos necesarios en relación al Broker. Después, necesité ayuda para saber cómo publicar o suscribirse en distintos topics los mensajes que debían de recibirse o enviarse.
+
+En este caso, hubo las mismas dudas que con el Monitor en cuanto a los Threads y, con ayuda de la IA y siguiendo la estructura que se usa con ellos en el Monitor, se consiguió implementar para leer los comandos por teclado, consultar continuamente los topics de Kafka e ir haciendo el Health_Check con el Monitor de manera simultánea.
+
+Además, se le pidió a la IA que pusiera una serie de comandos para probar la comunicación entre el Monitor y el Engine, a parte del KO y del OK, la función de regar con x cantidad de litros y parar el riego. Con ello se podía observar que la conexión estaba bien hecha y se transmitía entre dos powershells en el mismo ordenador. La implementación no tiene ningún misterio porque se trata de un switch case, pero por ahorro de tiempo más que nada.
+
+Field Operator:
+
+La IA me ayudó a entender el papel de un productor y un consumidor de Kafka y cómo encajar el envío de solicitudes y la recepción de notificaciones dentro de la aplicación del operario. También la utilicé para revisar la organización del código y la relación entre la entrada del usuario, el envío de la petición y la respuesta que recibe desde Central.
+
+Y, como se puede intuir, también ha sido necesario la IA para verificar el código y corregirlo en caso de que sea necesario.
+
+Revisión e integración de mi parte del proyecto:
+
+A medida que avanzaba, fui pasando fragmentos de mi código y describiendo qué quería conseguir para que ChatGPT señalara problemas o propusiera correcciones. Una dificultad recurrente fue que algunas de la solucionan que proponía usaba estructuras o conceptos que van más allá del alcance de la asignatura y tuve que ir guiándola para obtener el resultado esperado.
+
+También recurrí a la IA para entender mejor cómo se configuran los proyectos Java con Maven y cómo se añaden las dependencias necesarias para trabajar con Kafka. En los proyectos WM_WS y WM_Fo tenemos archivos pom.xml donde se incluyen Kafka Clients y SLF4J, además del plugin Maven Shade, que permite generar un JAR con las dependencias necesarias. En el caso de WM_FO, también se configura la clase WM_FO como punto de entrada de la aplicación.
+
+Varios de los prompts utilizados (pedido a la IA para que me recopile una serie de mensajes del chat que teníamos):
+
+- «Te paso el enunciado de la práctica. Quiero que me diseñes una hoja de ruta para saber como abarcarla, po dónde empezar y por qué hacerlo de esa manera».
+- «¿Qué atributos debería tener el Engine y cuáles el Monitor?».
+- «¿El socket que utiliza el Monitor para conectarse al Engine necesita el host o solamente el puerto?».
+- «¿Cómo puede el Monitor mantener la conexión con el Engine y con CENTRAL al mismo tiempo?».
+- «Quiero que el Monitor compruebe el Engine cada segundo mientras sigue recibiendo mensajes de CENTRAL. ¿Cómo lo puedo implementar?».
+- «Analiza el código que he hecho y dime qué está mal».
+
+Básicamente, la IA ha sido una ayuda importante y se ha utilizado de forma bastante amplia, especialmente para obtener ejemplos y borradores de código y para resolver dudas sobre sockets, Kafka y la organización de los módulos. Soy consciente de que el uso de ella puede ser perjudicial si se usa sin control. Por eso he intentado revisar las respuestas, adaptarlas a la estructura del proyecto y pedir explicaciones de los cambios, en lugar de limitarme a copiar el código sin entenderlo.
+
+Aun así, el uso de IA no significa que domine automáticamente todo lo que aparece en el proyecto. Hay partes que he tenido que estudiar más y otras que debo seguir repasando. La responsabilidad de entender el funcionamiento de los módulos, comprobar que se integran correctamente y poder explicar o modificar el código sigue siendo mía.

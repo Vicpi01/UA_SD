@@ -179,8 +179,7 @@ public class WM_FO {
         }
     }
 
-    private static void procesarLinea(String linea, String operario,
-                                      KafkaProducer<String, String> productor, KafkaConsumer<String, String> consumidor) {
+    private static void procesarLinea(String linea, String operario, KafkaProducer<String, String> productor, KafkaConsumer<String, String> consumidor) {
         String[] f = linea.trim().split("#", -1);
         if (f.length > 2 || f[0].isBlank()) {
             System.out.println("Formato: idWS#duracionSegundos (0 = duración por defecto de CENTRAL), LISTA o SALIR");
